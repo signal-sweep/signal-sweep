@@ -4,19 +4,19 @@ Find the open GitHub issues and discussions whose problem your project's docs al
 
 ## How discovery works
 
-**Lane 1 — query-first.** Each topic your project can answer gets 2–3 search phrasings (GitHub search syntax: bare terms AND together, quotes are exact). The scanner runs them across all of GitHub's issues *and* discussions, windowed from the last run, so input scales with what's new rather than re-crawling anything.
+**Lane 1 (query-first).** Each topic your project can answer gets 2–3 search phrasings (GitHub search syntax: bare terms AND together, quotes are exact). The scanner runs them across all of GitHub's issues *and* discussions, windowed from the last run, so input scales with what's new rather than re-crawling anything.
 
-**Lane 2 — watchlist.** A few repos whose audience overlaps yours so strongly they deserve a look even without keyword hits. The scanner pulls their newest threads since the last run.
+**Lane 2 (watchlist).** A few repos whose audience overlaps yours so strongly they deserve a look even without keyword hits. The scanner pulls their newest threads since the last run.
 
 Filters before anything reaches you: a venue floor (`min_stars`, watchlist exempt), a per-repo cap so one mega-repo can't flood the output, your own repo and account excluded, everything previously surfaced excluded (seen-store), everything previously *answered* excluded forever (ledger).
 
-## The judgment half — yours
+## The judgment half is yours
 
 The scanner is recall; you are precision. For each candidate ask:
 
 - **Direct fit:** does a specific page of your docs answer *this exact question*? Adjacency ("they're discussing our general area") is a skip.
 - **Venue:** is the repo notable, and is its audience your audience? The `pattern` field is a hint from loose search matching, not a verdict.
-- **Answer-gap:** if the thread has comments, read them first. If a good answer exists, skip — never duplicate.
+- **Answer-gap:** if the thread has comments, read them first. If a good answer exists, skip; never duplicate.
 
 ## Etiquette, the part that matters
 
@@ -54,4 +54,4 @@ The example config is a real one: the topic groups the [agent-workspace-architec
 
 ## Driving it with an agent
 
-[SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, score against the fit bar, draft replies, then a hard per-comment approval gate before anything posts. Port the same shape to any agent runtime — the load-bearing parts are the gate and the ledger, not the assistant.
+[SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, score against the fit bar, draft replies, then a hard per-comment approval gate before anything posts. Port the same shape to any agent runtime; the load-bearing parts are the gate and the ledger, not the assistant.
