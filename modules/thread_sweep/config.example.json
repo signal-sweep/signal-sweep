@@ -101,6 +101,13 @@
         "open source repo PII redact before",
         "pre-commit hook prevent leaking identifiers"
       ]
+    },
+    "mentions": {
+      "answers_with": "respond or correct where the project is being discussed (note: min_stars floor applies to this group too)",
+      "phrases": [
+        "\"agent-workspace-architecture\"",
+        "\"signal-sweep\""
+      ]
     }
   }
 }
