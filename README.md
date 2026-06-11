@@ -6,6 +6,8 @@ Maintainers answer the same questions over and over in scattered GitHub threads,
 
 Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://github.com/jzingsheimdes).
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-stdlib%20%2B%20gh-green)
+
 ## Design principles
 
 1. **Deterministic discovery, human judgment.** Code retrieves and filters (search queries, dedup, venue floors, per-repo caps). People decide what deserves an answer. If an LLM helps with scoring and drafting, it works from the scanner's output and its drafts go through the same gate as everything else.
@@ -41,6 +43,10 @@ python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --commen
 ```
 
 The module [README](modules/thread_sweep/README.md) covers the lanes, the scoring bar, and the etiquette rules in detail. If you drive it with an agent, [SKILL.example.md](modules/thread_sweep/SKILL.example.md) is a working Claude Code skill wrapper with the approval gate spelled out.
+
+## Contributing
+
+Issues and PRs welcome, module ideas especially. One rule is non-negotiable: nothing that weakens the human gate (auto-post paths, batch approval, schedulers) gets merged. Contributor conventions live in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

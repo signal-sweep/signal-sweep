@@ -1,4 +1,4 @@
-# CLAUDE.md — contributor context
+# CLAUDE.md (contributor context)
 
 Human-gated presence tooling. Two maintainers (@jimy-r, @jzingsheimdes), best-effort.
 
@@ -12,5 +12,5 @@ Human-gated presence tooling. Two maintainers (@jimy-r, @jzingsheimdes), best-ef
 
 ## Layout
 
-- `modules/<name>/` — one self-contained module per directory: script, `config.example.json`, module README, optional agent-skill example.
+- `modules/<name>/`: one self-contained module per directory (script, `config.example.json`, module README, optional agent-skill example).
 - Shared helpers stay inside the module until two modules genuinely need them; extract on the second use, not the first.
