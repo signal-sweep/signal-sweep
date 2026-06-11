@@ -22,7 +22,7 @@ Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://
 |---|---|---|
 | [`thread-sweep`](modules/thread_sweep/) | Finds open GitHub issues and discussions whose problem your project's docs already solve. Two lanes: per-topic search queries across all of GitHub, plus a pinned watchlist of high-overlap repos. | v0 |
 
-The shape is deliberately modular. Candidate siblings: a mention sweep (where your project is being discussed), a curated-list submission tracker, a release radar for repos you cite. Ideas and PRs welcome.
+The shape is deliberately modular. [ROADMAP.md](ROADMAP.md) holds the direction: three build candidates with open issues, and a longer explored-but-unscheduled tail. Ideas and PRs welcome.
 
 ## Quick start
 
