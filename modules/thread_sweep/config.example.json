@@ -1,0 +1,106 @@
+{
+  "_comment": "Copy to config.json and edit. This example is a real working config: the agent-workspace-architecture project's actual topic groups, published as the worked example.",
+  "own_login": "jimy-r",
+  "own_repo": "jimy-r/agent-workspace-architecture",
+  "min_stars": 300,
+  "per_repo_cap": 4,
+  "per_query": 15,
+  "emit_cap": 100,
+  "seen_retention_days": 180,
+  "default_window_days": 14,
+  "state_dir": "state",
+  "candidates_file": "candidates.json",
+  "watchlist": [
+    "anthropics/claude-code",
+    "anthropics/claude-code-action"
+  ],
+  "queries": {
+    "roles-architecture": {
+      "answers_with": "PATTERNS.md #1 — pure roles composed with project facts",
+      "phrases": [
+        "claude code subagents organize roles",
+        "agent persona library reusable",
+        "system prompt per agent role duplication"
+      ]
+    },
+    "review-queue": {
+      "answers_with": "PATTERNS.md #2 — classify-then-act, sandboxed builds, review queue",
+      "phrases": [
+        "autonomous agent changes without approval",
+        "agent sandbox review queue unattended",
+        "background agent speculative work review"
+      ]
+    },
+    "dead-mans-switch": {
+      "answers_with": "PATTERNS.md #3 — dead-man's switch over scheduled jobs",
+      "phrases": [
+        "scheduled agent failed silently",
+        "cron claude stopped running no error",
+        "\"claude code\" scheduled task never ran"
+      ]
+    },
+    "impact-tiering": {
+      "answers_with": "PATTERNS.md #4 — tier by mechanical impact, not by tone",
+      "phrases": [
+        "agent permission system design approve",
+        "auto-approve commands agent safety tiers"
+      ]
+    },
+    "memory-hygiene": {
+      "answers_with": "PATTERNS.md #5 — memory hygiene (dedup, verify, index ceiling)",
+      "phrases": [
+        "agent memory bloat stale facts",
+        "\"claude code\" memory drift wrong",
+        "agent long term memory contradictions"
+      ]
+    },
+    "credential-discipline": {
+      "answers_with": "PATTERNS.md #6 — credentials in one place, never in files",
+      "phrases": [
+        "agent api keys env files leaked",
+        "\"claude code\" credentials secrets manage",
+        "agent committed secret accidentally"
+      ]
+    },
+    "hooks-guards": {
+      "answers_with": "PATTERNS.md #7 — cheap hooks beat careful agents",
+      "phrases": [
+        "\"claude code\" deleted my files",
+        "block destructive commands agent hook",
+        "pretooluse hook protect files"
+      ]
+    },
+    "workspace-audit": {
+      "answers_with": "PATTERNS.md #8 — audit the workspace like a fitness function",
+      "phrases": [
+        "agent workspace config drift audit",
+        "CLAUDE.md stale maintenance review",
+        "agent setup rot silent breakage"
+      ]
+    },
+    "context-budget": {
+      "answers_with": "PATTERNS.md #9 — context is a budget, not a constant",
+      "phrases": [
+        "\"claude code\" context bloat",
+        "CLAUDE.md too large tokens",
+        "agent token cost runaway"
+      ]
+    },
+    "fabrication-guard": {
+      "answers_with": "repo — deterministic extraction, no LLM-invented data",
+      "phrases": [
+        "agent fabricated data",
+        "agent hallucinated tool results",
+        "agent invented results unattended"
+      ]
+    },
+    "redaction-publishing": {
+      "answers_with": "repo — redaction CI gate + denylist pre-commit",
+      "phrases": [
+        "publish private repo scrub secrets history",
+        "open source repo PII redact before",
+        "pre-commit hook prevent leaking identifiers"
+      ]
+    }
+  }
+}
