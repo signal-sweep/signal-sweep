@@ -21,6 +21,7 @@ Subcommands (all take --config, default ./config.json):
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -65,10 +66,21 @@ def load_config(path):
             f"config not found: {cfg_path}\n"
             "Copy config.example.json to config.json and edit it for your project."
         )
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
+    if not isinstance(cfg["queries"], dict):
+        sys.exit("config 'queries' must be an object of topic groups")
+    for topic, group in cfg["queries"].items():
+        phrases = group.get("phrases") if isinstance(group, dict) else None
+        if not isinstance(group, dict) or not isinstance(phrases, list) or not phrases:
+            sys.exit(
+                f"config 'queries.{topic}' must be an object with a non-empty 'phrases' list"
+            )
     for key, val in DEFAULTS.items():
         cfg.setdefault(key, val)
     return cfg
@@ -84,9 +96,23 @@ def gh_graphql(query, **variables):
     for key, val in variables.items():
         flag = "-F" if isinstance(val, int) else "-f"
         cmd += [flag, f"{key}={val}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    except FileNotFoundError:
+        sys.exit("gh CLI not found — install it and run 'gh auth login'")
     if proc.returncode != 0:
-        return None, proc.stderr.strip()[:500]
+        err = proc.stderr.strip()[:500]
+        low = err.lower()
+        auth_markers = (
+            "401",
+            "bad credentials",
+            "authentication",
+            "gh auth login",
+            "not logged in",
+        )
+        if any(marker in low for marker in auth_markers):
+            sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
+        return None, err
     try:
         return json.loads(proc.stdout), None
     except json.JSONDecodeError as exc:
@@ -95,7 +121,13 @@ def gh_graphql(query, **variables):
 
 def load_state(state_file):
     if state_file.exists():
-        return json.loads(state_file.read_text(encoding="utf-8"))
+        try:
+            return json.loads(state_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(
+                f"WARN state file {state_file} was corrupt — resetting to empty state",
+                file=sys.stderr,
+            )
     return {"last_run": None, "seen": {}}
 
 
@@ -131,7 +163,7 @@ def density_counts(ledger_file):
     return counts
 
 
-def node_to_candidate(node, pattern, lane):
+def node_to_candidate(node, pattern, lane, answers_with=""):
     if not node or "url" not in node:
         return None
     repo = node.get("repository") or {}
@@ -148,6 +180,7 @@ def node_to_candidate(node, pattern, lane):
         "author": author,
         "snippet": body[:500],
         "pattern": pattern,
+        "answers_with": answers_with,
         "lane": lane,
     }
 
@@ -160,6 +193,7 @@ def search_lane(cfg, since_date, errors):
         "{ nodes { %s } } }"
     )
     for pattern, group in cfg["queries"].items():
+        answers_with = group.get("answers_with", "")
         for phrase in group["phrases"]:
             base = (
                 f"{phrase} created:>{since_date} sort:created-desc "
@@ -177,7 +211,7 @@ def search_lane(cfg, since_date, errors):
                 for node in (data.get("data", {}).get("search", {}) or {}).get(
                     "nodes", []
                 ):
-                    cand = node_to_candidate(node, pattern, "query")
+                    cand = node_to_candidate(node, pattern, "query", answers_with)
                     if cand:
                         results.append(cand)
     return results
@@ -202,7 +236,11 @@ def watchlist_lane(cfg, since_iso, errors):
       }
     }"""
     for full in cfg["watchlist"]:
-        owner, name = full.split("/")
+        parts = full.strip().split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            errors.append(f"watchlist entry not in owner/name form, skipped: {full!r}")
+            continue
+        owner, name = parts
         data, err = gh_graphql(gql, owner=owner, name=name)
         if err:
             errors.append(f"watchlist {full}: {err}")
@@ -223,7 +261,7 @@ def cmd_scan(args):
     state_dir, state_file, ledger_file = state_paths(cfg)
     state = load_state(state_file)
     now = datetime.now(timezone.utc)
-    if args.days:
+    if args.days is not None:
         since = now - timedelta(days=args.days)
     elif state.get("last_run"):
         since = datetime.fromisoformat(state["last_run"])
@@ -279,7 +317,9 @@ def cmd_scan(args):
         state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
         state["last_run"] = now.isoformat()
         state_dir.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
+        tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
+        tmp_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
+        os.replace(tmp_file, state_file)
 
     payload = {
         "scanned_at": now.isoformat(),
