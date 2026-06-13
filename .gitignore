@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.ruff_cache/
 state/
 candidates.json
 config.json
