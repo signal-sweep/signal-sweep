@@ -83,7 +83,11 @@
       "phrases": [
         "\"claude code\" context bloat",
         "CLAUDE.md too large tokens",
-        "agent token cost runaway"
+        "agent token cost runaway",
+        "\"claude code\" prompt caching cache miss",
+        "agent context window full compaction",
+        "\"claude code\" token usage too high",
+        "subagent context isolation cost"
       ]
     },
     "fabrication-guard": {
