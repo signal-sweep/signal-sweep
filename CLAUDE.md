@@ -1,6 +1,6 @@
 # CLAUDE.md (contributor context)
 
-Human-gated presence tooling. Two maintainers (@jimy-r, @jzingsheimdes), best-effort.
+Human-gated presence tooling. Two maintainers (@jimy-r, @jtzingsheim1), best-effort.
 
 ## Working principles
 

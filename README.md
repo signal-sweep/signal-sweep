@@ -4,7 +4,7 @@ Human-gated presence tooling for open-source projects.
 
 Maintainers answer the same questions over and over in scattered GitHub threads, while the people asking never find the docs that already answer them. signal-sweep closes that gap without becoming a spam cannon: a deterministic scanner discovers candidate threads, a human (optionally working with an AI assistant) judges fit and drafts replies, nothing posts without explicit per-comment approval, and a ledger guarantees no thread is ever answered twice.
 
-Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://github.com/jzingsheimdes).
+Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://github.com/jtzingsheim1).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-stdlib%20%2B%20gh-green)
 
