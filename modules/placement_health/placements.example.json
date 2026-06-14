@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to placements.json and edit. This example is real: the agent-workspace-architecture project's actual placements. 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
+  "placements": [
+    {
+      "name": "GitHub Pages tour (own property)",
+      "url": "https://jimy-r.github.io/agent-workspace-architecture/",
+      "expect": "Agent Workspace Architecture",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "Repo README (own property)",
+      "url": "https://raw.githubusercontent.com/jimy-r/agent-workspace-architecture/main/README.md",
+      "expect": "PATTERNS.md",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "jqueryscript/awesome-claude-code (list submission)",
+      "url": "https://raw.githubusercontent.com/jqueryscript/awesome-claude-code/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "kind": "list",
+      "status": "pending"
+    }
+  ]
+}
