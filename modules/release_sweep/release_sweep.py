@@ -95,7 +95,11 @@ def previous_tag(repo, current):
 
 
 def cmd_brief(args):
-    channels = load_channels(args.config)
+    all_channels = load_channels(args.config)
+    paused = [c.get("name", "?") for c in all_channels if c.get("active") is False]
+    channels = [c for c in all_channels if c.get("active") is not False]
+    if not channels:
+        sys.exit("every channel is paused (active:false) - nothing to assemble")
     repo = resolve_repo(args.repo)
 
     fields = "tagName,name,publishedAt,body,url"
@@ -149,6 +153,8 @@ def cmd_brief(args):
         f"  {len(commits)} commit subjects captured; notes {len(brief['notes'])} chars"
     )
     print(f"  channels to draft for: {', '.join(c.get('name', '?') for c in channels)}")
+    if paused:
+        print(f"  paused (active:false, skipped): {', '.join(paused)}")
     print(f"  material -> {BRIEF_PATH}")
     print("  Next: an assistant drafts one announcement per channel from the brief;")
     print("  you approve and post each individually, then `mark-announced`.")

@@ -35,5 +35,6 @@ Run from inside the repo and `--repo` auto-detects from the GitHub remote. Requi
 | `kind` | `social` / `longform` / `newsletter` — informational |
 | `char_limit` | length budget the drafter must respect (`null` for none) |
 | `notes` | the channel's format and tone rules — the drafter treats these as constraints |
+| `active` | set `false` to pause a channel: it stays in the registry but `brief` skips it (and lists it as paused). Defaults to active. |
 
-The example registry covers Show HN, X, Reddit, a changelog post, and a newsletter blurb. Edit it to the channels you actually use; the brief only scaffolds what's listed.
+The example registry covers Show HN, X, Reddit, a changelog post, and a newsletter blurb. Edit it to the channels you actually use; the brief only scaffolds what's listed and not paused. Pausing (rather than deleting) keeps a channel's constraints around for when you want it back.
