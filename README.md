@@ -21,6 +21,7 @@ Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://
 | Module | What it does | Status |
 |---|---|---|
 | [`thread-sweep`](modules/thread_sweep/) | Finds open GitHub issues and discussions whose problem your project's docs already solve. Two lanes: per-topic search queries across all of GitHub, plus a pinned watchlist of high-overlap repos. | v0 |
+| [`placement-health`](modules/placement_health/) | Watches the places your project is listed (awesome-lists, directories, your own pages) and reports when an entry gets DROPPED or a link goes BROKEN. Inward-facing, no gate. | v0 |
 
 The shape is deliberately modular. [ROADMAP.md](ROADMAP.md) holds the direction: three build candidates with open issues, and a longer explored-but-unscheduled tail. Ideas and PRs welcome.
 

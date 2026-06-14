@@ -29,7 +29,7 @@ Ideas that fit the pipeline and may graduate to issues when someone wants to bui
 - `digest-sweep` — periodic state-of-the-niche digest assembled from sweep data. Carries a cadence commitment; adopt deliberately.
 
 **Presence intelligence** (inward-facing, no gate needed because nothing is outbound)
-- `placement-health` — verify your listings stayed live, links unbroken, badges current.
+- ~~`placement-health`~~ — **built ([modules/placement_health/](modules/placement_health/))**: verify your listings stayed live, links unbroken.
 - `adjacent-sweep` — watch neighbouring tools' trackers for unmet needs; roadmap signal plus future thread candidates.
 - `audience-sweep` — cluster stargazers/forkers by org, aggregate only.
 - `citation-sweep` — academic mentions via arXiv/Semantic Scholar.
