@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to channels.json and edit for the channels you actually announce to. The script pairs each channel's constraints with the real release material; an assistant drafts from that, you approve and post each one, then `mark-announced`. Nothing here posts on its own.",
+  "_comment": "Copy to channels.json and edit for the channels you actually announce to. The script pairs each channel's constraints with the real release material; an assistant drafts from that, you approve and post each one, then `mark-announced`. Nothing here posts on its own. Add \"active\": false to any channel to pause it (kept here, skipped by `brief`).",
   "channels": [
     {
       "name": "show-hn",
