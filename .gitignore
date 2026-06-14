@@ -2,8 +2,12 @@ __pycache__/
 *.pyc
 .ruff_cache/
 state/
+# live configs (each pairs with a committed *.example.json) and run outputs
 candidates.json
 config.json
+placements.json
+channels.json
+release_brief.json
 *.local.json
 .DS_Store
 Thumbs.db
