@@ -1,0 +1,35 @@
+{
+  "_comment": "Copy to channels.json and edit for the channels you actually announce to. The script pairs each channel's constraints with the real release material; an assistant drafts from that, you approve and post each one, then `mark-announced`. Nothing here posts on its own.",
+  "channels": [
+    {
+      "name": "show-hn",
+      "kind": "social",
+      "char_limit": 80,
+      "notes": "Title <=80 chars, 'Show HN: <project> - <one-line>'. Link to the repo. The real pitch goes in your first comment: what it does, why it beats the obvious alternative, what's new in this release. No marketing voice."
+    },
+    {
+      "name": "twitter-x",
+      "kind": "social",
+      "char_limit": 280,
+      "notes": "One hook + link. Lead with the single most interesting change in this release, not a feature list."
+    },
+    {
+      "name": "reddit",
+      "kind": "social",
+      "char_limit": null,
+      "notes": "Context-first, link in body not title. Self-promo gets downvoted; frame as 'here's a thing I built and what I learned', tied to the subreddit's interest."
+    },
+    {
+      "name": "changelog-post",
+      "kind": "longform",
+      "char_limit": null,
+      "notes": "The why and the shape, grouped by theme. Mirror the project's CHANGELOG voice. Link each item to its PR/commit where useful."
+    },
+    {
+      "name": "newsletter-blurb",
+      "kind": "newsletter",
+      "char_limit": 600,
+      "notes": "3-5 sentences a curator can drop in verbatim: what changed, why it matters, who it's for. No first person."
+    }
+  ]
+}

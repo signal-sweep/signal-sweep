@@ -20,7 +20,7 @@ Ideas that fit the pipeline and may graduate to issues when someone wants to bui
 
 **Submission and distribution**
 - `cfp-sweep` — conference/meetup CFP discovery matched to your topics, with drafted abstracts.
-- `release-sweep` — per-channel announcement drafts generated from the real release diff.
+- ~~`release-sweep`~~ — **built ([modules/release_sweep/](modules/release_sweep/))**: per-channel announcement material assembled from the real release diff; gated drafting + posting.
 - `directory-sweep` — non-GitHub tool directories and registries, same registry-plus-gate shape as list-sweep.
 
 **Content creation**
