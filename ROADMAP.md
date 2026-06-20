@@ -15,7 +15,7 @@ The build candidates, each with an open issue for discussion and claiming:
 Ideas that fit the pipeline and may graduate to issues when someone wants to build them.
 
 **Inbound answers** (thread-sweep's mechanics, new sources)
-- `forum-sweep` — Reddit, HN, Lobsters, Discourse threads via per-source adapters.
+- ~~`forum-sweep`~~ — **built ([modules/forum_sweep/](modules/forum_sweep/))**: Discourse vendor forums (primary) + Hacker News + Lobsters + an opt-in discovery-only Reddit lane, via per-source adapters on the shared gated pipeline.
 - `mention-sweep` — places the project is already being discussed or misdescribed; respond or correct, gated.
 
 **Submission and distribution**

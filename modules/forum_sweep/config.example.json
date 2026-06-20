@@ -1,0 +1,74 @@
+{
+  "_comment": "Copy to config.json and edit for your project. This is the PUBLIC example with placeholder subject + reusable query groups (seeded from the thread-sweep themes). The real config.json is gitignored. Discovery is automated; posting is always a human gate (see the module README).",
+  "subject": {
+    "name": "your-project",
+    "url": "https://github.com/your-org/your-project"
+  },
+  "query_groups": {
+    "roles-architecture": [
+      "claude code subagents organize roles",
+      "agent persona library reusable",
+      "system prompt per agent role duplication"
+    ],
+    "review-queue": [
+      "autonomous agent changes without approval",
+      "agent sandbox review queue unattended",
+      "background agent speculative work review"
+    ],
+    "dead-mans-switch": [
+      "scheduled agent failed silently",
+      "cron claude stopped running no error"
+    ],
+    "memory-hygiene": [
+      "agent memory bloat stale facts",
+      "agent long term memory contradictions"
+    ],
+    "credential-discipline": [
+      "agent api keys env files leaked",
+      "agent committed secret accidentally"
+    ],
+    "hooks-guards": [
+      "block destructive commands agent hook",
+      "pretooluse hook protect files"
+    ],
+    "context-budget": [
+      "claude code context bloat",
+      "agent context window full compaction",
+      "agent token cost runaway"
+    ]
+  },
+  "sources": {
+    "discourse": {
+      "instances": [
+        "forum.cursor.com",
+        "community.openai.com",
+        "discuss.huggingface.co"
+      ]
+    },
+    "hn": {
+      "enabled": true
+    },
+    "lobsters": {
+      "tags": [
+        "ai",
+        "vibecoding"
+      ]
+    },
+    "reddit": {
+      "_caveat": "DISCOVERY-ONLY and opt-in. Governed by the Reddit Data API terms; best-effort public JSON read for discovery only. NEVER automate posting. Reddit shadowban removals are INVISIBLE, so a posted-ledger entry for Reddit can be a lie — verify out-of-band before trusting it. Leave enabled=false unless you understand this.",
+      "enabled": false,
+      "subs": [
+        "LocalLLaMA",
+        "ClaudeAI",
+        "AI_Agents",
+        "LLMDevs"
+      ]
+    }
+  },
+  "thresholds": {
+    "per_source_cap": 4,
+    "hn_min_points": 2
+  },
+  "state_dir": "state",
+  "candidates_file": "candidates.json"
+}
