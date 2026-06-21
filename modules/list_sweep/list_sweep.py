@@ -186,7 +186,7 @@ def gh(args):
 
 def search_repos(query, limit, errors):
     """Lane 1: `gh search repos` for awesome-list / directory repos."""
-    fields = "fullName,description,stargazersCount,url,repository"
+    fields = "fullName,description,stargazersCount,url"
     data, err = gh(
         [
             "search",
