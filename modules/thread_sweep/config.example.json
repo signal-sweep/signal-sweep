@@ -106,6 +106,30 @@
         "pre-commit hook prevent leaking identifiers"
       ]
     },
+    "skill-as-weights": {
+      "answers_with": "PATTERNS.md #10 — a skill is editable weights; gate a self-edit before adopting",
+      "phrases": [
+        "agent rewrites its own instructions safely",
+        "self improving claude.md prompt risk",
+        "let agent edit its own system prompt gate"
+      ]
+    },
+    "scaffold-hypothesis": {
+      "answers_with": "PATTERNS.md #11 — a scaffold is a hypothesis; gate it behind a measurable signal",
+      "phrases": [
+        "does adding an agent skill actually improve results",
+        "measure whether a prompt change helped eval",
+        "agent self critique pass adds nothing"
+      ]
+    },
+    "loop-selection": {
+      "answers_with": "PATTERNS.md #12 — loop selection: not everything should be a loop",
+      "phrases": [
+        "should I automate this agent task or not",
+        "when to let an agent run autonomously",
+        "which agent tasks should be a loop"
+      ]
+    },
     "mentions": {
       "answers_with": "respond or correct where the project is being discussed (note: min_stars floor applies to this group too)",
       "phrases": [
