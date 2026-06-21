@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to config.json and edit for your project. This example is real: the match strings, repo URLs, and own-repo exclusions for the agent-workspace-architecture + signal-sweep projects. Discovery is automated; engaging or correcting a mention is always a human gate (see the module README).",
+  "display_name": "agent-workspace-architecture + signal-sweep",
+  "match_strings": [
+    "agent-workspace-architecture",
+    "github.com/jimy-r/agent-workspace-architecture",
+    "signal-sweep",
+    "github.com/signal-sweep/signal-sweep"
+  ],
+  "own_repos": [
+    "jimy-r/agent-workspace-architecture",
+    "signal-sweep/signal-sweep"
+  ],
+  "min_stars": 0,
+  "per_repo_cap": 4,
+  "per_query": 20,
+  "emit_cap": 100,
+  "seen_retention_days": 180,
+  "default_window_days": 30,
+  "scan_code_lane": true,
+  "state_dir": "state",
+  "candidates_file": "candidates.json"
+}
