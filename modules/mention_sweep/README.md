@@ -24,6 +24,10 @@ Each hit gets a heuristic class to triage faster:
 
 The class is a hint from string matching, never a verdict. A human reads the snippet and decides.
 
+## Match confidence
+
+Each candidate also carries a `match_type`: `url` when the hit came from a repo URL or `owner/name` path, `name` when it came from a bare project name. URL matches are high-confidence, because only a real reference produces them. Bare-name matches are noisier: a name like `agent-workspace-architecture` is a plausible generic phrase, so many name-only hits are coincidental rather than genuine references. Candidates are sorted url-first and the scan prints a `by_match_type` count, so triage the `url` hits first and treat `name`-only hits as low-confidence until you read them.
+
 ## The gate
 
 Discovery, classification, and draft stubs are automated. Engaging, correcting, amplifying, or converting a mention is not. Nothing goes outbound without per-artifact human approval. There is no auto-post path, no batch-approve flag, no scheduler that acts. `mark-posted` only records a reply you already posted by hand, so the ledger never surfaces that mention again.

@@ -217,6 +217,20 @@ def is_own_repo(repo, own_repos):
     return any(repo_l == str(own).lower() for own in own_repos)
 
 
+def match_kind(term):
+    """Confidence of a match string: 'url' (high) vs 'name' (low).
+
+    A URL or owner/name path (a slash or github.com) only matches a real
+    reference to the project. A bare project name is a plausible generic phrase
+    that matches coincidentally — a live run confirmed bare-name hits are mostly
+    noise. The human triages 'url' hits first; 'name'-only hits are low-trust
+    until read."""
+    t = (term or "").lower()
+    if "://" in t or "github.com/" in t or "/" in t:
+        return "url"
+    return "name"
+
+
 # --- gh helper ---------------------------------------------------------------
 
 
@@ -309,6 +323,7 @@ def node_to_candidate(node, term, lane):
         "author": author,
         "snippet": snippet,
         "match": term,
+        "match_type": match_kind(term),
         "kind": classify(title, snippet),
         "lane": lane,
     }
@@ -338,6 +353,7 @@ def code_hit_to_candidate(hit, term):
         "author": "",
         "snippet": snippet,
         "match": term,
+        "match_type": match_kind(term),
         "kind": classify(path, snippet),
         "lane": "code",
     }
@@ -478,7 +494,10 @@ def cmd_scan(args):
         batch_urls.add(url)
         kept.append(cand)
 
-    kept.sort(key=lambda c: (c["stars"], c["created"]), reverse=True)
+    kept.sort(
+        key=lambda c: (c["match_type"] == "url", c["stars"], c["created"]),
+        reverse=True,
+    )
     per_repo, capped = {}, []
     for cand in kept:
         repo = cand["repo"]
@@ -503,13 +522,16 @@ def cmd_scan(args):
     os.replace(tmp_file, state_file)
 
     by_kind = {}
+    by_match_type = {}
     for cand in kept:
         by_kind[cand["kind"]] = by_kind.get(cand["kind"], 0) + 1
+        by_match_type[cand["match_type"]] = by_match_type.get(cand["match_type"], 0) + 1
 
     payload = {
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         "by_kind": by_kind,
+        "by_match_type": by_match_type,
         "posting_density": density_counts(ledger_file),
         "dropped": dropped,
         "errors": errors,
@@ -521,7 +543,7 @@ def cmd_scan(args):
     dens = payload["posting_density"]
     print(
         f"MENTION_SWEEP_OK window>{since_date} raw={len(raw)} kept={len(kept)} "
-        f"by_kind={by_kind} dropped={dropped} errors={len(errors)}"
+        f"by_kind={by_kind} by_match_type={by_match_type} dropped={dropped} errors={len(errors)}"
     )
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
     print(f"candidates -> {out}")

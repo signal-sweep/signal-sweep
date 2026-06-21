@@ -227,6 +227,7 @@ class ScanIntegrationTests(unittest.TestCase):
                 "scanned_at",
                 "window_since",
                 "by_kind",
+                "by_match_type",
                 "posting_density",
                 "dropped",
                 "errors",
@@ -242,6 +243,7 @@ class ScanIntegrationTests(unittest.TestCase):
                 "stars",
                 "snippet",
                 "match",
+                "match_type",
                 "kind",
                 "lane",
             ):
@@ -410,6 +412,59 @@ class NoAutoPostTests(unittest.TestCase):
             self.assertNotIn("--method POST", joined)
             # GraphQL bodies are query (read), never mutation (write).
             self.assertNotIn("mutation", joined)
+
+
+class MatchTypeTests(unittest.TestCase):
+    def test_url_terms_are_high_confidence(self):
+        self.assertEqual(ms.match_kind("github.com/acme/widgets"), "url")
+        self.assertEqual(ms.match_kind("https://github.com/acme/widgets"), "url")
+        self.assertEqual(ms.match_kind("acme/widgets"), "url")
+
+    def test_bare_name_is_low_confidence(self):
+        self.assertEqual(ms.match_kind("signal-sweep"), "name")
+        self.assertEqual(ms.match_kind("agent-workspace-architecture"), "name")
+
+    def test_url_matches_rank_before_name_matches(self):
+        # A bare-name hit with many stars and a url hit with few. The url hit
+        # must sort first: match confidence outranks star count.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg = _write_config(
+                tmp,
+                match_strings=["signal-sweep", "github.com/acme/signal-sweep"],
+                own_repos=[],
+                min_stars=0,
+                scan_code_lane=False,
+            )
+
+            class PerTermGh:
+                def __call__(self, cmd, *a, **k):
+                    joined = " ".join(cmd)
+                    if "graphql" in cmd:
+                        if "github.com/acme/signal-sweep" in joined:
+                            return _proc(
+                                stdout=_graphql_payload(
+                                    [_issue_node("https://x/url", "url hit", stars=10)]
+                                )
+                            )
+                        return _proc(
+                            stdout=_graphql_payload(
+                                [_issue_node("https://x/name", "name hit", stars=9000)]
+                            )
+                        )
+                    return _proc(stdout="[]")
+
+            args = _Args(config=str(cfg_path), days=30, limit=None, dry_run=False)
+            buf = io.StringIO()
+            with mock.patch.object(ms.subprocess, "run", PerTermGh()):
+                with redirect_stdout(buf):
+                    ms.cmd_scan(args)
+            payload = json.loads(
+                Path(cfg["candidates_file"]).read_text(encoding="utf-8")
+            )
+            cands = payload["candidates"]
+            self.assertEqual(cands[0]["url"], "https://x/url")
+            self.assertEqual(cands[0]["match_type"], "url")
+            self.assertEqual(payload["by_match_type"].get("url"), 1)
 
 
 if __name__ == "__main__":
