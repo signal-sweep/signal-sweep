@@ -6,9 +6,13 @@ Direction, not a promise. Every module here is the same five-stage pipeline — 
 
 The build candidates, each with an open issue for discussion and claiming:
 
-1. **list-sweep** ([#2](https://github.com/signal-sweep/signal-sweep/issues/2)) — curated-list discovery, intake-mechanics detection, drafted entries, submission tracking.
+1. ~~**list-sweep**~~ ([#2](https://github.com/signal-sweep/signal-sweep/issues/2)) — **built ([modules/list_sweep/](modules/list_sweep/))**: curated-list discovery, intake-mechanics detection (PR / issue-form / web-form / human-only), drafted entries, submission tracking; dedups against placement-health.
 2. **stack-sweep** ([#3](https://github.com/signal-sweep/signal-sweep/issues/3)) — the thread-sweep pipeline pointed at Stack Overflow/Exchange; forces the shared-core decision.
 3. **newsletter-sweep** ([#4](https://github.com/signal-sweep/signal-sweep/issues/4)) — outlet registry, submission windows, per-outlet pitch drafting, cooldown ledger.
+
+## Build order — two lenses
+
+Ordered by *strategic position*, placement discoverability leads — `list-sweep` (now built) and the directory family. Ordered instead by *autonomy × build effort* (cheapest to run unattended, no gate to build), the inward modules lead: `citation-sweep` (keyless arXiv + Semantic Scholar, `placement-health`-shaped, no `gh`/ledger/gate) and `audience-sweep` are the next cheap wins, ahead of the remaining outbound-gated candidates (`stack-sweep`, `newsletter-sweep`). Both orders are defensible; inward-first ships value without touching the gate. Anything needing a per-run login (Reddit/X/LinkedIn posting) stays out (see Not planned).
 
 ## Explored, unscheduled
 
@@ -16,7 +20,7 @@ Ideas that fit the pipeline and may graduate to issues when someone wants to bui
 
 **Inbound answers** (thread-sweep's mechanics, new sources)
 - ~~`forum-sweep`~~ — **built ([modules/forum_sweep/](modules/forum_sweep/))**: Discourse vendor forums (primary) + Hacker News + Lobsters + an opt-in discovery-only Reddit lane, via per-source adapters on the shared gated pipeline.
-- `mention-sweep` — places the project is already being discussed or misdescribed; respond or correct, gated.
+- ~~`mention-sweep`~~ — **built ([modules/mention_sweep/](modules/mention_sweep/))**: entity-first discovery of where the project is named or misdescribed (GitHub issues/discussions + `gh search code`); gated engage / correct / amplify.
 
 **Submission and distribution**
 - `cfp-sweep` — conference/meetup CFP discovery matched to your topics, with drafted abstracts.
