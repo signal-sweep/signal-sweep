@@ -35,6 +35,11 @@
       "claude code context bloat",
       "agent context window full compaction",
       "agent token cost runaway"
+    ],
+    "agent-autonomy": [
+      "should I automate this agent task",
+      "when to let an agent run autonomously",
+      "human in the loop vs full automation agent"
     ]
   },
   "sources": {

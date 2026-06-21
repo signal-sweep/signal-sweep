@@ -24,6 +24,8 @@ Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://
 | [`placement-health`](modules/placement_health/) | Watches the places your project is listed (awesome-lists, directories, your own pages) and reports when an entry gets DROPPED or a link goes BROKEN. Inward-facing, no gate. | v0 |
 | [`release-sweep`](modules/release_sweep/) | On a new release, pulls the tag, notes, and diff-since-previous and assembles per-channel announcement material (Show HN, social, changelog, newsletter) for an assistant to draft from. Gated: nothing posts without per-channel approval. | v0 |
 | [`forum-sweep`](modules/forum_sweep/) | Finds answer-the-question threads beyond GitHub: Discourse vendor forums (primary), Hacker News, Lobsters, and an opt-in discovery-only Reddit lane. One adapter per source on the shared gated pipeline. | v0 |
+| [`mention-sweep`](modules/mention_sweep/) | Finds where your project is already named or misdescribed across GitHub issues, discussions, and code, then drafts gated engage/correct replies. Entity-first, the complement to thread-sweep. | v0 |
+| [`list-sweep`](modules/list_sweep/) | Discovers curated lists and directories where your project could be listed, detects each one's intake mechanics (PR / issue-form / web-form), and drafts a gated submission entry. The top-of-funnel complement to placement-health. | v0 |
 
 The shape is deliberately modular. [ROADMAP.md](ROADMAP.md) holds the direction: three build candidates with open issues, and a longer explored-but-unscheduled tail. Ideas and PRs welcome.
 
