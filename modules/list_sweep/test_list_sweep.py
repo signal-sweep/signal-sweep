@@ -330,14 +330,9 @@ class DryRunTests(unittest.TestCase):
                 mock.patch.object(
                     ls, "fetch_raw", side_effect=AssertionError("no network in dry-run")
                 ),
-                mock.patch.object(
-                    ls.subprocess, "run", side_effect=AssertionError("no subprocess")
-                ),
-                mock.patch.object(
-                    ls.urllib.request,
-                    "urlopen",
-                    side_effect=AssertionError("no urlopen"),
-                ),
+                # search_repos + fetch_raw are the only list-sweep I/O paths; the
+                # raw subprocess/urllib calls now live in sweepcore (imported), so
+                # guarding those two functions is the dry-run no-I/O assertion.
                 mock.patch("sys.stdout", buf),
             ):
                 rc = ls.cmd_scan(args)

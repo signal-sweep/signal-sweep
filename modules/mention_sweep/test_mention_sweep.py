@@ -466,6 +466,38 @@ class MatchTypeTests(unittest.TestCase):
             self.assertEqual(cands[0]["match_type"], "url")
             self.assertEqual(payload["by_match_type"].get("url"), 1)
 
+    def test_name_hit_needs_body_corroboration(self):
+        corr = ms.corroborators_for(
+            {
+                "match_strings": ["signal-sweep", "github.com/acme/signal-sweep"],
+                "own_repos": ["acme/signal-sweep"],
+                "context_terms": ["coined-token"],
+            }
+        )
+        # bare-name hit whose body does not corroborate -> downgraded
+        c1 = ms.refine_match_type(
+            {"match_type": "name", "title": "loving signal-sweep", "snippet": "great"},
+            corr,
+        )
+        self.assertEqual(c1["match_type"], "name-unconfirmed")
+        # body carries the owner/name path -> stays a confirmed name hit
+        c2 = ms.refine_match_type(
+            {"match_type": "name", "title": "see acme/signal-sweep", "snippet": ""},
+            corr,
+        )
+        self.assertEqual(c2["match_type"], "name")
+        # body carries a configured context_term -> confirmed
+        c3 = ms.refine_match_type(
+            {"match_type": "name", "title": "x", "snippet": "uses coined-token here"},
+            corr,
+        )
+        self.assertEqual(c3["match_type"], "name")
+        # url hits are untouched
+        c4 = ms.refine_match_type(
+            {"match_type": "url", "title": "x", "snippet": ""}, corr
+        )
+        self.assertEqual(c4["match_type"], "url")
+
 
 if __name__ == "__main__":
     unittest.main()

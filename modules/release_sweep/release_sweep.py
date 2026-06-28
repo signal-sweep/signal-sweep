@@ -24,35 +24,48 @@ Subcommands (all take --config, default ./channels.json):
 
 import argparse
 import json
-import subprocess
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import gh  # noqa: E402
 
 LEDGER_PATH = Path("state/announced_log.jsonl")
 BRIEF_PATH = Path("release_brief.json")
 MAX_COMMITS = 50
 
+# Conventional-Commit prefix: type, optional (scope), optional ! bang, then colon.
+_CC_PREFIX = re.compile(
+    r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<bang>!)?:\s*", re.IGNORECASE
+)
 
-def gh(args):
-    """Run a gh command; return (parsed-or-text, error-or-None)."""
-    try:
-        proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, encoding="utf-8"
-        )
-    except FileNotFoundError:
-        sys.exit("gh CLI not found - install it and run 'gh auth login'")
-    if proc.returncode != 0:
-        err = proc.stderr.strip()[:300]
-        low = err.lower()
-        if any(m in low for m in ("auth", "401", "not logged in")):
-            sys.exit(f"gh authentication failed - run 'gh auth login': {err}")
-        return None, err
-    out = proc.stdout.strip()
-    try:
-        return json.loads(out), None
-    except json.JSONDecodeError:
-        return out, None
+
+def bucket_commits(subjects):
+    """Group commit subject lines by Conventional-Commit prefix.
+
+    Returns a dict with four ordered buckets: breaking, feat, fix, other.
+    A subject lands in exactly one bucket (breaking > feat > fix > other).
+    The `type(scope):` prefix is stripped so the human-readable change shows.
+    """
+    buckets = {"breaking": [], "feat": [], "fix": [], "other": []}
+    for subject in subjects:
+        if not subject:
+            continue
+        m = _CC_PREFIX.match(subject)
+        ctype = m.group("type").lower() if m else None
+        bang = bool(m.group("bang")) if m else False
+        stripped = subject[m.end() :] if m else subject
+        if bang or "BREAKING CHANGE" in subject:
+            buckets["breaking"].append(stripped)
+        elif ctype == "feat":
+            buckets["feat"].append(stripped)
+        elif ctype == "fix":
+            buckets["fix"].append(stripped)
+        else:
+            buckets["other"].append(stripped)
+    return buckets
 
 
 def load_channels(path):
@@ -136,6 +149,7 @@ def cmd_brief(args):
         "previous_tag": prev,
         "notes": rel.get("body", ""),
         "commit_subjects": commits,
+        "highlights": bucket_commits(commits),
         "stats": stats,
         "channels": channels,
     }
@@ -151,6 +165,11 @@ def cmd_brief(args):
         )
     print(
         f"  {len(commits)} commit subjects captured; notes {len(brief['notes'])} chars"
+    )
+    h = brief["highlights"]
+    print(
+        f"  highlights: {len(h['breaking'])} breaking / {len(h['feat'])} feat"
+        f" / {len(h['fix'])} fix / {len(h['other'])} other"
     )
     print(f"  channels to draft for: {', '.join(c.get('name', '?') for c in channels)}")
     if paused:

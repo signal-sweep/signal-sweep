@@ -13,3 +13,16 @@ jobs:
       - run: pip install ruff
       - run: ruff check .
       - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      # Each module is a standalone (non-package) directory, so a single
+      # top-level `unittest discover` would only find modules/test_sweepcore.py
+      # and skip every per-module suite. run_tests.py discovers each directory
+      # in its own subprocess so all suites gate the PR.
+      - run: python modules/run_tests.py
