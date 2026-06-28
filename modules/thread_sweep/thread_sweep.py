@@ -21,11 +21,21 @@ Subcommands (all take --config, default ./config.json):
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import (  # noqa: E402
+    TIER_RANK,
+    append_ledger,
+    density_counts,
+    gh_graphql,
+    load_state,
+    posted_urls,
+    relevance_tier,
+    write_json_atomic,
+)
 
 REQUIRED_KEYS = ["own_login", "own_repo", "queries"]
 DEFAULTS = {
@@ -91,83 +101,13 @@ def state_paths(cfg):
     return state_dir, state_dir / "sweep_state.json", state_dir / "posted_ledger.jsonl"
 
 
-def gh_graphql(query, **variables):
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
-    for key, val in variables.items():
-        flag = "-F" if isinstance(val, int) else "-f"
-        cmd += [flag, f"{key}={val}"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except FileNotFoundError:
-        sys.exit("gh CLI not found — install it and run 'gh auth login'")
-    if proc.returncode != 0:
-        err = proc.stderr.strip()[:500]
-        low = err.lower()
-        auth_markers = (
-            "401",
-            "bad credentials",
-            "authentication",
-            "gh auth login",
-            "not logged in",
-        )
-        if any(marker in low for marker in auth_markers):
-            sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
-        return None, err
-    try:
-        return json.loads(proc.stdout), None
-    except json.JSONDecodeError as exc:
-        return None, f"bad json: {exc}"
-
-
-def load_state(state_file):
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(
-                f"WARN state file {state_file} was corrupt — resetting to empty state",
-                file=sys.stderr,
-            )
-    return {"last_run": None, "seen": {}}
-
-
-def posted_urls(ledger_file):
-    urls = set()
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    urls.add(json.loads(line)["url"])
-                except (json.JSONDecodeError, KeyError):
-                    continue
-    return urls
-
-
-def density_counts(ledger_file):
-    now = datetime.now(timezone.utc)
-    counts = {30: 0, 90: 0}
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                when = datetime.fromisoformat(json.loads(line)["date"])
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-            age = (now - when).days
-            for window in counts:
-                if age <= window:
-                    counts[window] += 1
-    return counts
-
-
 def node_to_candidate(node, pattern, lane, answers_with=""):
     if not node or "url" not in node:
         return None
     repo = node.get("repository") or {}
     author = (node.get("author") or {}).get("login", "")
+    # SECURITY: bodyText is UNTRUSTED EXTERNAL CONTENT. Truncated and stored for
+    # a human to read; never interpreted as an instruction by this tool.
     body = (node.get("bodyText") or "").replace("\r", " ").replace("\n", " ")
     return {
         "url": node["url"],
@@ -297,7 +237,11 @@ def cmd_scan(args):
         batch_urls.add(url)
         kept.append(cand)
 
-    kept.sort(key=lambda c: (c["stars"], c["created"]), reverse=True)
+    for cand in kept:
+        cand["tier"] = relevance_tier(cand)
+    kept.sort(
+        key=lambda c: (TIER_RANK[c["tier"]], c["stars"], c["created"]), reverse=True
+    )
     per_repo, capped = {}, []
     for cand in kept:
         repo = cand["repo"]
@@ -316,15 +260,16 @@ def cmd_scan(args):
         cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
         state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
         state["last_run"] = now.isoformat()
-        state_dir.mkdir(parents=True, exist_ok=True)
-        tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-        tmp_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
-        os.replace(tmp_file, state_file)
+        write_json_atomic(state_file, state)
 
+    by_tier = {}
+    for cand in kept:
+        by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
     payload = {
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         "posting_density": density_counts(ledger_file),
+        "by_tier": by_tier,
         "dropped": dropped,
         "errors": errors,
         "candidates": kept,
@@ -337,6 +282,10 @@ def cmd_scan(args):
     print(
         f"THREAD_SWEEP_OK{mode} window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"dropped={dropped} errors={len(errors)}"
+    )
+    print(
+        f"fit tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
+        f"{by_tier.get('low', 0)} low"
     )
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
     print(f"candidates -> {out}")
@@ -355,19 +304,17 @@ def cmd_density(args):
 
 def cmd_mark_posted(args):
     cfg = load_config(args.config)
-    state_dir, _state, ledger_file = state_paths(cfg)
+    _state_dir, _state, ledger_file = state_paths(cfg)
     comment = ""
     if args.comment_file:
         comment = Path(args.comment_file).read_text(encoding="utf-8").strip()
-    state_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "url": args.url,
         "pattern": args.pattern,
         "comment": comment,
     }
-    with ledger_file.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry) + "\n")
+    append_ledger(ledger_file, entry)
     print(f"LEDGER_OK {args.url}")
     return 0
 

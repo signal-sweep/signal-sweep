@@ -31,14 +31,23 @@ Subcommands (all take --config, default ./config.json):
 
 import argparse
 import json
-import os
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import (  # noqa: E402
+    TIER_RANK,
+    append_ledger,
+    density_counts,
+    http_get,
+    load_state,
+    posted_urls,
+    relevance_tier,
+    write_json_atomic,
+)
 
 REQUIRED_KEYS = ["subject", "query_groups", "sources"]
 DEFAULTS = {
@@ -108,53 +117,6 @@ def state_paths(cfg):
     )
 
 
-# --- shared dedup / ledger / state core (copied from thread_sweep, adapted) ----
-
-
-def load_state(state_file):
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(
-                f"WARN state file {state_file} was corrupt — resetting to empty state",
-                file=sys.stderr,
-            )
-    return {"last_run": None, "seen": {}}
-
-
-def posted_urls(ledger_file):
-    urls = set()
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    urls.add(json.loads(line)["url"])
-                except (json.JSONDecodeError, KeyError):
-                    continue
-    return urls
-
-
-def density_counts(ledger_file):
-    now = datetime.now(timezone.utc)
-    counts = {30: 0, 90: 0}
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                when = datetime.fromisoformat(json.loads(line)["date"])
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-            age = (now - when).days
-            for window in counts:
-                if age <= window:
-                    counts[window] += 1
-    return counts
-
-
 def make_candidate(
     url, title, created, source, score_or_stars, comments, snippet, pattern, lane
 ):
@@ -182,28 +144,25 @@ def make_candidate(
 
 def http_get_json(url, errors, label):
     """GET a URL and parse JSON. Fail-soft: any error appends to errors[] and
-    returns None so the caller continues to the next instance/source."""
+    returns None so the caller continues to the next instance/source. Delegates
+    the fetch to sweepcore.http_get, which adds 429/503 Retry-After backoff."""
     if REQUEST_DELAY > 0:
         time.sleep(REQUEST_DELAY)
-    req = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+    status, body, err = http_get(
+        url,
+        timeout=HTTP_TIMEOUT,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            if resp.status != 200:
-                errors.append(f"{label}: HTTP {resp.status}")
-                return None
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        # 403/503 here is typically a Cloudflare/login wall on a Discourse
-        # instance — degrade gracefully, don't abort the scan.
-        errors.append(f"{label}: HTTP {exc.code}")
+    if err:
+        # A network error or non-2xx (403/503 is typically a Cloudflare/login
+        # wall on a Discourse instance) — degrade gracefully, don't abort.
+        errors.append(f"{label}: {err}")
         return None
-    except (urllib.error.URLError, TimeoutError) as exc:
-        errors.append(f"{label}: {exc}")
+    if status != 200:
+        errors.append(f"{label}: HTTP {status}")
         return None
     try:
-        return json.loads(raw)
+        return json.loads(body)
     except json.JSONDecodeError:
         # A login/Cloudflare interstitial returns HTML, not JSON — treat as a
         # soft failure for this instance and move on.
@@ -465,7 +424,7 @@ def cmd_scan(args):
     cfg = load_config(args.config)
     global REQUEST_DELAY
     REQUEST_DELAY = cfg.get("request_delay_seconds", 0.0)
-    state_dir, state_file, ledger_file = state_paths(cfg)
+    _dir, state_file, ledger_file = state_paths(cfg)
     state = load_state(state_file)
     now = datetime.now(timezone.utc)
     if args.days is not None:
@@ -509,7 +468,12 @@ def cmd_scan(args):
         batch_urls.add(url)
         kept.append(cand)
 
-    kept.sort(key=lambda c: (c["score_or_stars"], c["created"]), reverse=True)
+    for cand in kept:
+        cand["tier"] = relevance_tier(cand)
+    kept.sort(
+        key=lambda c: (TIER_RANK[c["tier"]], c["score_or_stars"], c["created"]),
+        reverse=True,
+    )
     # Per-source cap (analogue of thread_sweep's per-repo cap): one busy
     # instance/site can't flood the digest.
     per_source, capped = {}, []
@@ -530,16 +494,17 @@ def cmd_scan(args):
         cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
         state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
         state["last_run"] = now.isoformat()
-        state_dir.mkdir(parents=True, exist_ok=True)
-        tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-        tmp_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
-        os.replace(tmp_file, state_file)
+        write_json_atomic(state_file, state)
 
+    by_tier = {}
+    for cand in kept:
+        by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
     payload = {
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         "sources": list(selected),
         "posting_density": density_counts(ledger_file),
+        "by_tier": by_tier,
         "dropped": dropped,
         "errors": errors,
         "candidates": kept,
@@ -552,6 +517,10 @@ def cmd_scan(args):
     print(
         f"FORUM_SWEEP_OK{mode} window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"dropped={dropped} errors={len(errors)}"
+    )
+    print(
+        f"fit tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
+        f"{by_tier.get('low', 0)} low"
     )
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
     print(f"candidates -> {out}")
@@ -570,19 +539,17 @@ def cmd_density(args):
 
 def cmd_mark_posted(args):
     cfg = load_config(args.config)
-    state_dir, _state, ledger_file = state_paths(cfg)
+    _dir, _state, ledger_file = state_paths(cfg)
     comment = ""
     if args.comment_file:
         comment = Path(args.comment_file).read_text(encoding="utf-8").strip()
-    state_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "url": args.url,
         "pattern": args.pattern,
         "comment": comment,
     }
-    with ledger_file.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry) + "\n")
+    append_ledger(ledger_file, entry)
     print(f"LEDGER_OK {args.url}")
     return 0
 

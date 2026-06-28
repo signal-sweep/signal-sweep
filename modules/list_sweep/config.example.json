@@ -19,9 +19,10 @@
   ],
   "watchlist": [
     "hesreallyhim/awesome-claude-code",
-    "e2b-dev/awesome-ai-agents",
-    "kyrolabs/awesome-agents",
-    "f/awesome-chatgpt-prompts"
+    "VoltAgent/awesome-agent-skills",
+    "devrelcollective/awesome-devrel",
+    "MarsX-dev/devhunt",
+    "kyrolabs/awesome-agents"
   ],
   "placements_path": "../placement_health/placements.json",
   "min_stars": 100,

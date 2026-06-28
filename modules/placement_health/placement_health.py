@@ -19,10 +19,11 @@ Subcommands (all take --config, default ./placements.json):
 import argparse
 import json
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import http_get  # noqa: E402
 
 UA = "placement-health (https://github.com/signal-sweep/signal-sweep)"
 DEFAULT_TIMEOUT = 15
@@ -53,15 +54,9 @@ def load_config(path):
 
 
 def fetch(url, timeout):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            return resp.status, body, None
-    except urllib.error.HTTPError as exc:
-        return exc.code, "", f"HTTP {exc.code}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return None, "", str(exc)[:200]
+    """Thin wrapper over sweepcore.http_get (adds 429/503 Retry-After backoff);
+    same (status, body, err) contract the rest of the module already expects."""
+    return http_get(url, timeout=timeout, headers={"User-Agent": UA})
 
 
 def check_one(placement, timeout):

@@ -35,13 +35,18 @@ Subcommands (all take --config, default ./config.json):
 
 import argparse
 import json
-import os
-import subprocess
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import (  # noqa: E402
+    append_ledger,
+    gh,
+    http_get,
+    load_state,
+    write_json_atomic,
+)
 
 REQUIRED_KEYS = ["own_repo", "topics", "search_keywords"]
 DEFAULTS = {
@@ -156,34 +161,6 @@ def state_paths(cfg):
     return state_dir, state_dir / "list_state.json", state_dir / "submitted_log.jsonl"
 
 
-def gh(args):
-    """Run a gh command; return (parsed-or-text, error-or-None)."""
-    try:
-        proc = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, encoding="utf-8"
-        )
-    except FileNotFoundError:
-        sys.exit("gh CLI not found - install it and run 'gh auth login'")
-    if proc.returncode != 0:
-        err = proc.stderr.strip()[:300]
-        low = err.lower()
-        auth_markers = (
-            "401",
-            "bad credentials",
-            "authentication",
-            "gh auth login",
-            "not logged in",
-        )
-        if any(marker in low for marker in auth_markers):
-            sys.exit(f"gh authentication failed - run 'gh auth login': {err}")
-        return None, err
-    out = proc.stdout.strip()
-    try:
-        return json.loads(out), None
-    except json.JSONDecodeError:
-        return out, None
-
-
 def search_repos(query, limit, errors):
     """Lane 1: `gh search repos` for awesome-list / directory repos."""
     fields = "fullName,description,stargazersCount,url"
@@ -214,15 +191,15 @@ def fetch_raw(repo, doc_path):
     """
     for branch in ("HEAD", "main", "master"):
         url = f"https://raw.githubusercontent.com/{repo}/{branch}/{doc_path}"
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
-        try:
-            with urllib.request.urlopen(req, timeout=INTAKE_TIMEOUT) as resp:
-                if resp.status == 200:
-                    return resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError:
-            continue
-        except (urllib.error.URLError, TimeoutError, OSError):
+        status, body, err = http_get(
+            url, timeout=INTAKE_TIMEOUT, headers={"User-Agent": UA}
+        )
+        if err is None and status == 200:
+            return body
+        if status is None:
+            # network-level failure (URLError / timeout / OSError) — give up
             return None
+        # an HTTP error on this branch (e.g. 404) — try the next one
     return None
 
 
@@ -313,6 +290,8 @@ def build_candidate(node, lane, cfg, errors, classify=True):
     repo_full = node.get("fullName") or node.get("repo") or ""
     if not repo_full:
         return None
+    # SECURITY: the repo description is UNTRUSTED EXTERNAL CONTENT. Scored and
+    # stored for a human to read; never interpreted as an instruction.
     description = node.get("description", "")
     stars = node.get("stargazersCount", node.get("stars", 0))
     url = node.get("url") or f"https://github.com/{repo_full}"
@@ -448,10 +427,7 @@ def cmd_scan(args):
     cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
     state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
     state["last_run"] = now.isoformat()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-    tmp_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    os.replace(tmp_file, state_file)
+    write_json_atomic(state_file, state)
 
     flagged = sum(1 for c in kept if c["flagged"])
     payload = {
@@ -495,18 +471,6 @@ def dry_run_queries(cfg, args):
     return build_queries(cfg, floor)
 
 
-def load_state(state_file):
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(
-                f"WARN state file {state_file} was corrupt - resetting to empty state",
-                file=sys.stderr,
-            )
-    return {"last_run": None, "seen": {}}
-
-
 def submitted_repos(ledger_file):
     """owner/name repos already submitted to, from the ledger (excluded forever)."""
     repos = set()
@@ -527,16 +491,14 @@ def submitted_repos(ledger_file):
 
 def cmd_mark_submitted(args):
     cfg = load_config(args.config)
-    state_dir, _state, ledger_file = state_paths(cfg)
-    state_dir.mkdir(parents=True, exist_ok=True)
+    _state_dir, _state, ledger_file = state_paths(cfg)
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "url": args.url,
         "list": args.list,
         "note": args.note or "",
     }
-    with ledger_file.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    append_ledger(ledger_file, entry)
     print(f"LEDGER_OK {args.list} <- submission recorded")
     return 0
 

@@ -2,17 +2,25 @@
 
 Direction, not a promise. Every module runs the same five-stage pipeline (**signal → judge → gate → act → ledger**), and the gate is non-negotiable in all of them: discovery, scoring, and drafting automate fully, but nothing outbound happens without per-artifact human approval.
 
+## Shared core
+
+The per-module pipeline sits on `modules/sweepcore.py` — the dedup, ledger, state, `gh`, HTTP (with 429/503 Retry-After backoff), and relevance-tiering primitives, imported by every module so gate and ledger semantics are identical by construction. New modules reuse it instead of copying it.
+
 ## Next
 
 The build candidates, each with an open issue for discussion and claiming:
 
 1. ~~**list-sweep**~~ ([#2](https://github.com/signal-sweep/signal-sweep/issues/2)). **Built ([modules/list_sweep/](modules/list_sweep/))**: curated-list discovery, intake-mechanics detection (PR / issue-form / web-form / human-only), drafted entries, submission tracking; dedups against placement-health.
-2. **stack-sweep** ([#3](https://github.com/signal-sweep/signal-sweep/issues/3)) — the thread-sweep pipeline pointed at Stack Overflow/Exchange; forces the shared-core decision.
-3. **newsletter-sweep** ([#4](https://github.com/signal-sweep/signal-sweep/issues/4)) — outlet registry, submission windows, per-outlet pitch drafting, cooldown ledger.
+2. **newsletter-sweep** ([#4](https://github.com/signal-sweep/signal-sweep/issues/4)) — outlet registry, submission windows, per-outlet pitch drafting, cooldown ledger.
+3. **directory-sweep** — list-sweep's off-GitHub twin (tool directories / registries). Scoped to a watchlist-only classifier. A 2026 channel health-check found standalone tool-directory discovery is a weak, AI-displaced channel whose best targets are human-only (hand-flagged), so a broad crawler is not worth building.
+
+(`stack-sweep`, the former #2, is now **Not planned** — see below.)
 
 ## Build order
 
-Promotion leverage leads: build the modules that put the project in front of new readers first. `list-sweep` (built) and the directory family (`directory-sweep`) surface it in curated lists and tool registries; the outbound answer venues (`stack-sweep`, `newsletter-sweep`) reach the people already asking the questions it answers. The inward, no-gate modules (`citation-sweep`, `audience-sweep`, `adjacent-sweep`) are deferred: they are cheap to run and need no approval gate, but they measure presence rather than build it, so they wait. Anything needing a per-run login (Reddit / X / LinkedIn posting) stays out entirely (see Not planned).
+Shipped on top of the shared core: release-sweep gained Conventional-Commit bucketed highlights, mention-sweep gained body-corroboration so coincidental-namesake hits rank last, and a deterministic high/med/low relevance tier now ranks thread/forum candidates for faster human triage.
+
+Promotion leverage leads the rest. The get-listed family (`list-sweep`, built; `directory-sweep`, watchlist-only) and the answer-the-question venues already built (thread/forum) reach the people asking the questions. The inward, no-gate modules (`citation-sweep`, `audience-sweep`, `adjacent-sweep`) measure presence rather than build it, so they wait. Anything needing a per-run login (Reddit / X / LinkedIn posting) stays out entirely (see Not planned).
 
 ## Explored, unscheduled
 
@@ -25,7 +33,7 @@ Ideas that fit the pipeline and may graduate to issues when someone wants to bui
 **Submission and distribution**
 - `cfp-sweep` — conference/meetup CFP discovery matched to your topics, with drafted abstracts.
 - ~~`release-sweep`~~. **Built ([modules/release_sweep/](modules/release_sweep/))**: per-channel announcement material assembled from the real release diff; gated drafting + posting.
-- `directory-sweep` — non-GitHub tool directories and registries, same registry-plus-gate shape as list-sweep.
+- `directory-sweep` — non-GitHub tool directories and registries, same registry-plus-gate shape as list-sweep. Promoted to Next in watchlist-only form (a 2026 channel health-check narrowed it from a broad crawler).
 
 **Content creation**
 - `qa-content-sweep` — turn the questions people actually ask (including other modules' rejected candidates) into FAQ/docs pages on your own property. Inbound, zero spam surface.
@@ -43,3 +51,5 @@ Several modules feed each other: thread-sweep's rejects feed qa-content-sweep, l
 ## Not planned
 
 Anything that weakens the gate: auto-post paths, batch approval, schedulers that act unattended. Modules that can't work inside the gate don't belong in this project.
+
+**stack-sweep** ([#3](https://github.com/signal-sweep/signal-sweep/issues/3)) — pointing the pipeline at Stack Overflow / Stack Exchange. Dropped after a 2026 review: Stack Overflow's public-question flow has fallen roughly 95% from its peak as developers moved to LLM chat and private communities, and the public Q&A venues that absorbed the spillover (GitHub Discussions, Discourse) are already covered by thread-sweep and forum-sweep. A thin Stack Exchange adapter on forum-sweep could still catch the residual long-tail later; a dedicated module is not worth building.

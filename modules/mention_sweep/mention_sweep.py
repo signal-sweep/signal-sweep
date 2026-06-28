@@ -39,11 +39,20 @@ Subcommands (all take --config, default ./config.json):
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sweepcore import (  # noqa: E402
+    append_ledger,
+    density_counts,
+    gh_graphql,
+    load_state,
+    posted_urls,
+    write_json_atomic,
+)
 
 REQUIRED_KEYS = ["display_name", "match_strings", "own_repos"]
 DEFAULTS = {
@@ -56,6 +65,7 @@ DEFAULTS = {
     "state_dir": "state",
     "candidates_file": "candidates.json",
     "scan_code_lane": True,
+    "context_terms": [],
 }
 
 # Classification hints. A favorable mention is the default; a question mark or
@@ -148,53 +158,6 @@ def state_paths(cfg):
     )
 
 
-# --- shared dedup / ledger / state core (copied from thread_sweep, adapted) ---
-
-
-def load_state(state_file):
-    if state_file.exists():
-        try:
-            return json.loads(state_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(
-                f"WARN state file {state_file} was corrupt — resetting to empty state",
-                file=sys.stderr,
-            )
-    return {"last_run": None, "seen": {}}
-
-
-def posted_urls(ledger_file):
-    urls = set()
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    urls.add(json.loads(line)["url"])
-                except (json.JSONDecodeError, KeyError):
-                    continue
-    return urls
-
-
-def density_counts(ledger_file):
-    now = datetime.now(timezone.utc)
-    counts = {30: 0, 90: 0}
-    if ledger_file.exists():
-        for line in ledger_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                when = datetime.fromisoformat(json.loads(line)["date"])
-            except (json.JSONDecodeError, KeyError, ValueError):
-                continue
-            age = (now - when).days
-            for window in counts:
-                if age <= window:
-                    counts[window] += 1
-    return counts
-
-
 # --- classification (hint only) ----------------------------------------------
 
 
@@ -231,35 +194,38 @@ def match_kind(term):
     return "name"
 
 
+# Ranking of match confidence for the digest sort: a confirmed url/owner-path
+# hit outranks a body-corroborated name hit, which outranks an uncorroborated
+# bare-name hit (the likely-coincidental namesake).
+_MATCH_RANK = {"url": 2, "name": 1, "name-unconfirmed": 0}
+
+
+def corroborators_for(cfg):
+    """High-confidence tokens that confirm a bare-name hit really refers to the
+    project: the url/owner-path forms of the match strings, the own-repo paths,
+    and any configured context_terms. The bare project name itself is NOT a
+    corroborator — it is the thing being confirmed."""
+    toks = {s.lower() for s in cfg.get("match_strings", []) if match_kind(s) == "url"}
+    toks.update(o.lower() for o in cfg.get("own_repos", []))
+    toks.update(t.lower() for t in cfg.get("context_terms", []))
+    return {t for t in toks if t}
+
+
+def refine_match_type(cand, corroborators):
+    """Body-scope confirmation. A 'name' hit stays 'name' only if its title or
+    snippet also carries a corroborating token; otherwise it drops to
+    'name-unconfirmed' (a likely coincidental namesake — a live run found ~71 of
+    72 bare-name hits were namesakes). 'url' hits are already high-confidence and
+    are left untouched."""
+    if cand.get("match_type") != "name":
+        return cand
+    blob = f"{cand.get('title', '')} {cand.get('snippet', '')}".lower()
+    if not any(tok in blob for tok in corroborators):
+        cand["match_type"] = "name-unconfirmed"
+    return cand
+
+
 # --- gh helper ---------------------------------------------------------------
-
-
-def gh_graphql(query, **variables):
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
-    for key, val in variables.items():
-        flag = "-F" if isinstance(val, int) else "-f"
-        cmd += [flag, f"{key}={val}"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except FileNotFoundError:
-        sys.exit("gh CLI not found — install it and run 'gh auth login'")
-    if proc.returncode != 0:
-        err = proc.stderr.strip()[:500]
-        low = err.lower()
-        auth_markers = (
-            "401",
-            "bad credentials",
-            "authentication",
-            "gh auth login",
-            "not logged in",
-        )
-        if any(marker in low for marker in auth_markers):
-            sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
-        return None, err
-    try:
-        return json.loads(proc.stdout), None
-    except json.JSONDecodeError as exc:
-        return None, f"bad json: {exc}"
 
 
 def gh_search_code(term, limit):
@@ -470,6 +436,12 @@ def cmd_scan(args):
     errors = []
     raw = thread_lane(cfg, since_date, errors) + code_lane(cfg, errors)
 
+    # Precision pass: downgrade bare-name hits the body does not corroborate to
+    # 'name-unconfirmed' so the likely-namesake noise ranks last, not first.
+    corroborators = corroborators_for(cfg)
+    for cand in raw:
+        refine_match_type(cand, corroborators)
+
     seen = state.get("seen", {})
     posted = posted_urls(ledger_file)
     kept, dropped = [], {"seen": 0, "posted": 0, "stars": 0, "own": 0, "dup": 0}
@@ -495,7 +467,7 @@ def cmd_scan(args):
         kept.append(cand)
 
     kept.sort(
-        key=lambda c: (c["match_type"] == "url", c["stars"], c["created"]),
+        key=lambda c: (_MATCH_RANK.get(c["match_type"], 0), c["stars"], c["created"]),
         reverse=True,
     )
     per_repo, capped = {}, []
@@ -516,10 +488,7 @@ def cmd_scan(args):
     cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
     state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
     state["last_run"] = now.isoformat()
-    state_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
-    tmp_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    os.replace(tmp_file, state_file)
+    write_json_atomic(state_file, state)
 
     by_kind = {}
     by_match_type = {}
@@ -562,19 +531,17 @@ def cmd_density(args):
 
 def cmd_mark_posted(args):
     cfg = load_config(args.config)
-    state_dir, _state, ledger_file = state_paths(cfg)
+    _state_dir, _state, ledger_file = state_paths(cfg)
     comment = ""
     if args.comment_file:
         comment = Path(args.comment_file).read_text(encoding="utf-8").strip()
-    state_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "url": args.url,
         "kind": args.kind,
         "comment": comment,
     }
-    with ledger_file.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry) + "\n")
+    append_ledger(ledger_file, entry)
     print(f"LEDGER_OK {args.url}")
     return 0
 
