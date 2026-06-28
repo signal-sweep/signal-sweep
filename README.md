@@ -27,7 +27,7 @@ Built by [James Ross](https://github.com/jimy-r) and [Justin Zingsheim](https://
 | [`mention-sweep`](modules/mention_sweep/) | Finds where your project is already named or misdescribed across GitHub issues, discussions, and code, then drafts gated engage/correct replies. Entity-first, the complement to thread-sweep. | v0 |
 | [`list-sweep`](modules/list_sweep/) | Discovers curated lists and directories where your project could be listed, detects each one's intake mechanics (PR / issue-form / web-form), and drafts a gated submission entry. The top-of-funnel complement to placement-health. | v0 |
 
-The shape is deliberately modular. [ROADMAP.md](ROADMAP.md) holds the direction: three build candidates with open issues, and a longer explored-but-unscheduled tail. Ideas and PRs welcome.
+The shape is deliberately modular. [ROADMAP.md](ROADMAP.md) holds the direction: the next build candidates with open issues, and a longer explored-but-unscheduled tail. Ideas and PRs welcome.
 
 ## Quick start
 
