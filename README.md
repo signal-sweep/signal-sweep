@@ -84,7 +84,7 @@ Issues and PRs welcome, module ideas especially. One rule is non-negotiable: not
 
 ## Built by
 
-[James Ross](https://jamesross.ai) and [Justin Zingsheim](https://github.com/jtzingsheim1). signal-sweep is the worked example of a presence-tooling pattern from James's [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture).
+[James Ross](https://jamesross.ai) and [Justin Zingsheim](https://github.com/jtzingsheim1). signal-sweep grew out of the thread-sweep module in James's [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) workspace, generalized into a standalone toolkit.
 
 ## License
 
