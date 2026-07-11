@@ -33,11 +33,13 @@ python thread_sweep.py density                    # how much you've posted latel
 `scan` prints a one-line summary of what it swept and kept:
 
 ```
-THREAD_SWEEP_OK  window>2026-05-31  raw=226 kept=36  dropped={seen:37, stars:117, repo_cap:36}
-fit tiers: 8 high / 28 med / 0 low
+THREAD_SWEEP_OK window>2026-06-28 raw=174 kept=44 dropped={'seen': 0, 'posted': 0, 'stars': 95, 'own': 0, 'dup': 6, 'repo_cap': 29} errors=0
+fit tiers: 6 high / 38 med / 0 low
 posting density: 0 in 30d / 0 in 90d
-candidates -> candidates.json   (you judge fit, draft replies, approve each post)
+candidates -> candidates.json
 ```
+
+From there you judge fit, draft the few replies worth making, and approve each post individually.
 
 Two discovery lanes feed it: per-topic search phrasings run across all of GitHub, plus a pinned watchlist of repos whose audience overlaps yours. Filters run before anything reaches you — a star floor, a per-repo cap so one mega-repo can't flood the shortlist, your own repo and account excluded, everything already surfaced excluded, everything already *answered* excluded forever. When you post, record it:
 
@@ -49,7 +51,7 @@ The module [README](modules/thread_sweep/README.md) covers the lanes, the fit ba
 
 ## The wider toolkit
 
-thread-sweep is one of six modules on a shared pipeline (`signal → judge → gate → act → ledger`). The gate and the ledger are identical across all of them, by construction, because they all import the same `modules/sweepcore.py`. Reach for the others once you've felt the need.
+thread-sweep is one of six modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health is inward-facing and needs neither). Reach for the others once you've felt the need.
 
 | Module | What it does |
 |---|---|
@@ -67,7 +69,7 @@ thread-sweep is one of six modules on a shared pipeline (`signal → judge → g
 These are why it stays useful instead of becoming the next muted bot.
 
 1. **Deterministic discovery, human judgment.** Code retrieves and filters. People decide what deserves an answer. An assistant may help score and draft, but its drafts go through the same gate as everything else.
-2. **The gate is the feature.** No comment posts without explicit, individual approval. No batch mode, no auto-post flag, no scheduler. Tools that post on their own are why maintainers ban link-droppers.
+2. **The gate is the feature.** No comment posts without explicit, individual approval. No batch mode, no auto-post flag, no scheduler. Tools that post on their own are why maintainers ban link-droppers, and GitHub's [Acceptable Use Policies](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies) prohibit automated bulk activity that generates unsolicited content. The per-comment gate keeps every reply an individual, deliberate act.
 3. **The answer is the payload; the link is garnish.** A reply must fully resolve the thread standing alone. If removing your link makes it a worse comment, don't post it.
 4. **A ledger, so nothing doubles up.** Every posted reply is recorded. The scanner excludes answered threads forever, and posting density is reported on every run so restraint stays visible.
 5. **Scarcity is the spam defence.** A few genuinely useful replies a month build standing. More spends it.

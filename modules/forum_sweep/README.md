@@ -116,6 +116,7 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 | `emit_cap` | recall ceiling on emitted candidates | `100` |
 | `seen_retention_days` | seen-store pruning horizon | `180` |
 | `default_window_days` | first-run window | `14` |
+| `request_delay_seconds` | polite sleep between HTTP requests (the 429 throttle; `0` disables) | `0.5` |
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
 
 State lives in `state/forum_sweep_state.json` (last_run + seen) and `state/forum_sweep_log.jsonl` (the posted ledger). Both are gitignored: the ledger is your posting history; never commit it.

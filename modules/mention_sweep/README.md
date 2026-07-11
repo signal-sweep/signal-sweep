@@ -26,7 +26,7 @@ The class is a hint from string matching, never a verdict. A human reads the sni
 
 ## Match confidence
 
-Each candidate also carries a `match_type`: `url` when the hit came from a repo URL or `owner/name` path, `name` when it came from a bare project name. URL matches are high-confidence, because only a real reference produces them. Bare-name matches are noisier: a name like `agent-workspace-architecture` is a plausible generic phrase, so many name-only hits are coincidental rather than genuine references. Candidates are sorted url-first and the scan prints a `by_match_type` count, so triage the `url` hits first and treat `name`-only hits as low-confidence until you read them.
+Each candidate carries a `match_type` with three values. `url` means the hit came from a repo URL or `owner/name` path — high-confidence, because only a real reference produces one. `name` means a bare project name that the thread body *corroborates*: the body also contains a URL/owner-path form or one of your configured `context_terms` (author handle, doc names, distinctive phrases). `name-unconfirmed` means a bare name with no corroboration at all — a name like `agent-workspace-architecture` is a plausible generic phrase, so uncorroborated hits are mostly coincidental namesakes and rank last. Candidates sort url-first and the scan prints a `by_match_type` count: triage `url` first, read `name`, and skim `name-unconfirmed` only for surprises.
 
 ## The gate
 
@@ -68,6 +68,7 @@ python mention_sweep.py mark-posted --url <mention-url> --kind correct --comment
 | `display_name` | label for the project set | required |
 | `match_strings` | distinctive names + repo URLs to search for | required |
 | `own_repos` | `owner/name` repos excluded from results | required |
+| `context_terms` | corroborating tokens (author handle, doc names, distinctive phrases) that upgrade a bare-name hit from `name-unconfirmed` to `name` | `[]` |
 | `min_stars` | thread-lane star floor (code lane exempt) | `0` |
 | `per_repo_cap` | max candidates per repo per scan | `4` |
 | `per_query` | results fetched per match string per type | `20` |
