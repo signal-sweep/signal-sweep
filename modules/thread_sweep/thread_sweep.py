@@ -135,8 +135,11 @@ def search_lane(cfg, since_date, errors):
     for pattern, group in cfg["queries"].items():
         answers_with = group.get("answers_with", "")
         for phrase in group["phrases"]:
+            # '>=' not '>': GitHub date qualifiers are day-granular, so '>'
+            # would skip everything created later on the last-run day itself;
+            # the seen-store dedups anything the inclusive boundary re-surfaces.
             base = (
-                f"{phrase} created:>{since_date} sort:created-desc "
+                f"{phrase} created:>={since_date} sort:created-desc "
                 f"-repo:{cfg['own_repo']}"
             )
             for kind, fields in (
@@ -196,25 +199,10 @@ def watchlist_lane(cfg, since_iso, errors):
     return results
 
 
-def cmd_scan(args):
-    cfg = load_config(args.config)
-    state_dir, state_file, ledger_file = state_paths(cfg)
-    state = load_state(state_file)
-    now = datetime.now(timezone.utc)
-    if args.days is not None:
-        since = now - timedelta(days=args.days)
-    elif state.get("last_run"):
-        since = datetime.fromisoformat(state["last_run"])
-    else:
-        since = now - timedelta(days=cfg["default_window_days"])
-    since_date = since.strftime("%Y-%m-%d")
-    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    errors = []
-    raw = search_lane(cfg, since_date, errors) + watchlist_lane(cfg, since_iso, errors)
-
-    seen = state.get("seen", {})
-    posted = posted_urls(ledger_file)
+def filter_candidates(raw, seen, posted, cfg):
+    """The keep/drop pass over raw candidates: batch-dup, posted-ledger,
+    seen-store, own-repo/own-login, and the query-lane star floor (watchlist
+    entries are hand-curated, so they bypass it). Pure — mutates nothing."""
     kept, dropped = [], {"seen": 0, "posted": 0, "stars": 0, "own": 0, "dup": 0}
     batch_urls = set()
     for cand in raw:
@@ -236,31 +224,74 @@ def cmd_scan(args):
             continue
         batch_urls.add(url)
         kept.append(cand)
+    return kept, dropped
+
+
+def cap_per_repo(kept, cap, dropped):
+    """Keep at most `cap` candidates per repo (input already sorted
+    best-first); overflow is counted in dropped['repo_cap']."""
+    per_repo, capped = {}, []
+    for cand in kept:
+        repo = cand["repo"]
+        if per_repo.get(repo, 0) >= cap:
+            dropped["repo_cap"] = dropped.get("repo_cap", 0) + 1
+            continue
+        per_repo[repo] = per_repo.get(repo, 0) + 1
+        capped.append(cand)
+    return capped
+
+
+def cmd_scan(args):
+    cfg = load_config(args.config)
+    state_dir, state_file, ledger_file = state_paths(cfg)
+    state = load_state(state_file)
+    now = datetime.now(timezone.utc)
+    if args.days is not None:
+        since = now - timedelta(days=args.days)
+    elif state.get("last_run"):
+        since = datetime.fromisoformat(state["last_run"])
+    else:
+        since = now - timedelta(days=cfg["default_window_days"])
+    since_date = since.strftime("%Y-%m-%d")
+    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    errors = []
+    raw = search_lane(cfg, since_date, errors) + watchlist_lane(cfg, since_iso, errors)
+
+    seen = state.get("seen", {})
+    posted = posted_urls(ledger_file)
+    kept, dropped = filter_candidates(raw, seen, posted, cfg)
 
     for cand in kept:
         cand["tier"] = relevance_tier(cand)
     kept.sort(
         key=lambda c: (TIER_RANK[c["tier"]], c["stars"], c["created"]), reverse=True
     )
-    per_repo, capped = {}, []
-    for cand in kept:
-        repo = cand["repo"]
-        if per_repo.get(repo, 0) >= cfg["per_repo_cap"]:
-            dropped["repo_cap"] = dropped.get("repo_cap", 0) + 1
-            continue
-        per_repo[repo] = per_repo.get(repo, 0) + 1
-        capped.append(cand)
+    capped = cap_per_repo(kept, cfg["per_repo_cap"], dropped)
     limit = args.limit or cfg["emit_cap"]
     kept = capped[:limit]
 
+    blackout = bool(errors) and not raw
     if not args.dry_run:
-        today = now.date().isoformat()
-        for cand in kept:
-            seen[cand["url"]] = today
-        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-        state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
-        state["last_run"] = now.isoformat()
-        write_json_atomic(state_file, state)
+        if blackout:
+            # Every request failed and nothing came back — advancing last_run
+            # now would silently skip this window forever. Keep the old stamp
+            # so the next scan re-covers it (the seen-store dedups any overlap).
+            print(
+                "WARN all lanes errored with nothing retrieved — "
+                "keeping last_run so this window is re-scanned next time",
+                file=sys.stderr,
+            )
+        else:
+            today = now.date().isoformat()
+            for cand in kept:
+                seen[cand["url"]] = today
+            cutoff = (
+                (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+            )
+            state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+            state["last_run"] = now.isoformat()
+            write_json_atomic(state_file, state)
 
     by_tier = {}
     for cand in kept:

@@ -111,6 +111,64 @@ class IntakeClassificationTests(unittest.TestCase):
         self.assertEqual(path, "pr")
         self.assertTrue(human)
 
+    def test_signal_in_later_doc_is_found(self):
+        # A generic CONTRIBUTING.md must not stop the search: the intake
+        # signal (and a human-only ban) may live further down the doc list.
+        docs = {
+            "CONTRIBUTING.md": "Thanks for contributing!",
+            "README.md": (
+                "Submissions go through our Google Form: forms.gle/x. "
+                "No bots, human submissions only."
+            ),
+        }
+        with mock.patch.object(
+            ls, "fetch_raw", side_effect=lambda repo, doc: docs.get(doc)
+        ):
+            path, doc, human = ls.classify_intake("owner/list", [])
+        self.assertEqual(path, "web-form")
+        self.assertEqual(doc, "README.md")
+        self.assertTrue(human)
+
+    def test_human_only_accumulates_when_no_signal_anywhere(self):
+        docs = {
+            "CONTRIBUTING.md": "Thanks for contributing!",
+            "README.md": "Curated by hand. No bots, human submissions only.",
+        }
+        with mock.patch.object(
+            ls, "fetch_raw", side_effect=lambda repo, doc: docs.get(doc)
+        ):
+            path, doc, human = ls.classify_intake("owner/list", [])
+        self.assertEqual(path, "unknown")
+        self.assertEqual(doc, "CONTRIBUTING.md")  # first doc actually seen
+        self.assertTrue(human)
+
+
+class WatchlistFitFloorTests(unittest.TestCase):
+    def test_watchlist_entry_bypasses_fit_floor(self):
+        # A watchlisted repo is hand-curated (and carries no description for
+        # fit_score to read), so like the star floor the fit floor must not
+        # silently drop it.
+        cfg = _full_config()
+        cfg["watchlist"] = ["someone/curated-list"]  # zero topic-term overlap
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+            args = mock.Mock(config="config.json", days=30, limit=None, dry_run=False)
+            with (
+                mock.patch.object(ls, "load_config", return_value=cfg),
+                mock.patch.object(ls, "build_queries", return_value=[]),
+                mock.patch.object(ls, "search_repos", return_value=[]),
+                mock.patch.object(ls, "fetch_raw", return_value="Open a pull request."),
+            ):
+                ls.cmd_scan(args)
+            payload = json.loads(
+                Path(cfg["candidates_file"]).read_text(encoding="utf-8")
+            )
+        self.assertEqual(
+            [c["repo"] for c in payload["candidates"]], ["someone/curated-list"]
+        )
+        self.assertEqual(payload["dropped"]["fit"], 0)
+
 
 class FitScoreTests(unittest.TestCase):
     def test_scores_topic_and_keyword_overlap(self):

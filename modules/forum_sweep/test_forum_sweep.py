@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 # forum_sweep adds modules/ to sys.path for sweepcore; replicate before import.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -153,6 +154,45 @@ class RedditOptInTests(unittest.TestCase):
         cfg = {"sources": {"hn": {}}, "query_groups": {"p": ["x"]}}
         since = datetime(2026, 6, 1, tzinfo=timezone.utc)
         self.assertEqual(fs.hn_adapter(cfg, since, []), [])
+
+
+class DiscourseSnippetTests(unittest.TestCase):
+    def test_snippet_comes_from_posts_blurb_when_topics_carry_none(self):
+        # The human-readable search blurb lives on posts[] keyed by topic_id;
+        # topics[] only carry an excerpt on instances configured to include
+        # one. The adapter must join the two or snippets go empty on many
+        # instances (observed live on instances that omit topic excerpts).
+        payload = {
+            "topics": [
+                {
+                    "id": 42,
+                    "slug": "agent-memory",
+                    "title": "Agent memory question",
+                    "created_at": "2026-07-01T00:00:00Z",
+                    "posts_count": 1,
+                    "like_count": 0,
+                }
+            ],
+            "posts": [{"topic_id": 42, "blurb": "How do I keep agent memory current?"}],
+        }
+        cfg = {
+            "sources": {"discourse": {"instances": ["forum.example.com"]}},
+            "query_groups": {"memory": ["agent memory"]},
+        }
+        since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.discourse_adapter(cfg, since, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["snippet"], "How do I keep agent memory current?")
+
+
+class RedditTimeParamTests(unittest.TestCase):
+    def test_smallest_covering_bucket(self):
+        now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        cases = [(3, "week"), (20, "month"), (90, "year"), (400, "all")]
+        for days, expected in cases:
+            since = now - timedelta(days=days)
+            self.assertEqual(fs._reddit_time_param(since, now), expected)
 
 
 class NoAutoPostTests(unittest.TestCase):

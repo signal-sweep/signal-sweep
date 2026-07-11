@@ -206,6 +206,76 @@ class HttpGetTests(unittest.TestCase):
             self.assertTrue(err)
 
 
+class DensityRobustnessTests(unittest.TestCase):
+    def test_naive_date_is_treated_as_utc_not_a_crash(self):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        naive_recent = (now - timedelta(days=5)).replace(tzinfo=None).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            led = Path(tmp) / "l.jsonl"
+            led.write_text(
+                json.dumps({"url": "u1", "date": naive_recent}) + "\n",
+                encoding="utf-8",
+            )
+            counts = sc.density_counts(led)  # must not raise TypeError
+            self.assertEqual(counts[30], 1)
+
+    def test_garbage_date_line_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = Path(tmp) / "l.jsonl"
+            led.write_text(
+                json.dumps({"url": "u1", "date": "not-a-date"}) + "\n",
+                encoding="utf-8",
+            )
+            counts = sc.density_counts(led)
+            self.assertEqual(counts, {30: 0, 90: 0})
+
+
+class HttpSchemeTests(unittest.TestCase):
+    def test_non_web_schemes_are_refused_without_a_request(self):
+        with mock.patch.object(sc.urllib.request, "urlopen") as opened:
+            for url in ("file:///etc/passwd", "ftp://host/x", "no-scheme-at-all"):
+                status, body, err = sc.http_get(url)
+                self.assertIsNone(status)
+                self.assertIn("scheme", err)
+            opened.assert_not_called()
+
+
+class NoAutoPostTests(unittest.TestCase):
+    """sweepcore owns the only network/subprocess primitives in the repo, so it
+    is where an outbound path would most plausibly be introduced. Extend the
+    per-module gate guards to the shared transport layer: read-only, no
+    mutations, no POSTs, no schedulers."""
+
+    def test_no_outbound_or_scheduler_token_in_source(self):
+        src = Path(sc.__file__).read_text(encoding="utf-8")
+        banned = [
+            "addDiscussionComment",
+            "mutation",
+            "--auto",
+            "auto_post",
+            "auto-post",
+            "batch_approve",
+            "batch-approve",
+            "schedule",
+            "cron",
+            "-X POST",
+            "--method POST",
+        ]
+        for token in banned:
+            self.assertNotIn(
+                token,
+                src,
+                f"outbound/auto-post/scheduler token {token!r} must not appear",
+            )
+
+    def test_http_layer_sends_no_request_body(self):
+        # urllib POSTs by passing data=; the read-only transport must never.
+        src = Path(sc.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("data=", src)
+
+
 class RelevanceTierTests(unittest.TestCase):
     def test_high_unanswered_pattern_popular(self):
         cand = {"is_answered": False, "comments": 0, "pattern": "memory", "stars": 5000}

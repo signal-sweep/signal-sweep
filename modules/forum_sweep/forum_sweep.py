@@ -196,6 +196,15 @@ def discourse_adapter(cfg, since_dt, errors):
                 topics = data.get("topics")
                 if not isinstance(topics, list):
                     continue
+                # The human-readable search blurb lives on the sibling posts[]
+                # array, keyed by topic_id; topics[] only carry an excerpt on
+                # instances configured to include one (many return it empty).
+                blurbs = {}
+                posts = data.get("posts")
+                if isinstance(posts, list):
+                    for p in posts:
+                        if isinstance(p, dict) and p.get("topic_id") is not None:
+                            blurbs.setdefault(p["topic_id"], p.get("blurb", ""))
                 for t in topics:
                     if not isinstance(t, dict):
                         continue
@@ -218,7 +227,9 @@ def discourse_adapter(cfg, since_dt, errors):
                             source=instance,
                             score_or_stars=t.get("like_count", 0) or t.get("views", 0),
                             comments=t.get("posts_count", 0),
-                            snippet=t.get("blurb", "") or t.get("excerpt", ""),
+                            snippet=blurbs.get(tid, "")
+                            or t.get("blurb", "")
+                            or t.get("excerpt", ""),
                             pattern=pattern,
                             lane="discourse",
                         )
@@ -342,6 +353,10 @@ def reddit_adapter(cfg, since_dt, errors):
     src = cfg["sources"].get("reddit") or {}
     if not src.get("enabled", False):
         return results
+    # Reddit caps results server-side by the `t` bucket; a fixed t=month
+    # silently truncated any window longer than a month while the digest
+    # still advertised the full range. Pick the smallest covering bucket.
+    t_param = _reddit_time_param(since_dt, datetime.now(timezone.utc))
     subs = src.get("subs") or []
     for sub in subs:
         sub = str(sub).strip()
@@ -352,7 +367,7 @@ def reddit_adapter(cfg, since_dt, errors):
                 q = urllib.parse.quote(phrase)
                 url = (
                     f"https://www.reddit.com/r/{urllib.parse.quote(sub)}/search.json"
-                    f"?q={q}&restrict_sr=1&sort=new&t=month"
+                    f"?q={q}&restrict_sr=1&sort=new&t={t_param}"
                 )
                 data = http_get_json(url, errors, f"reddit r/{sub} {pattern}")
                 if not data:
@@ -391,6 +406,18 @@ def reddit_adapter(cfg, since_dt, errors):
                         )
                     )
     return results
+
+
+def _reddit_time_param(since_dt, now):
+    """Smallest Reddit `t` bucket that covers the scan window."""
+    days = (now - since_dt).days
+    if days <= 7:
+        return "week"
+    if days <= 31:
+        return "month"
+    if days <= 365:
+        return "year"
+    return "all"
 
 
 def _within_window(created, since_dt):
@@ -488,13 +515,25 @@ def cmd_scan(args):
     kept = capped[:limit]
 
     if not args.dry_run:
-        today = now.date().isoformat()
-        for cand in kept:
-            seen[cand["url"]] = today
-        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-        state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
-        state["last_run"] = now.isoformat()
-        write_json_atomic(state_file, state)
+        if errors and not raw:
+            # Every request failed and nothing came back — advancing last_run
+            # now would silently skip this window forever. Keep the old stamp
+            # so the next scan re-covers it (the seen-store dedups any overlap).
+            print(
+                "WARN all sources errored with nothing retrieved — "
+                "keeping last_run so this window is re-scanned next time",
+                file=sys.stderr,
+            )
+        else:
+            today = now.date().isoformat()
+            for cand in kept:
+                seen[cand["url"]] = today
+            cutoff = (
+                (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+            )
+            state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+            state["last_run"] = now.isoformat()
+            write_json_atomic(state_file, state)
 
     by_tier = {}
     for cand in kept:

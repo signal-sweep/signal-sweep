@@ -210,19 +210,24 @@ def classify_intake(repo, errors):
     unknown; human_only is True if the docs ban automated or non-human
     submissions (the caller flags these for a human regardless of path).
     """
+    seen_doc = None
+    human_only = False
     for doc in INTAKE_DOCS:
         text = fetch_raw(repo, doc)
         if not text:
             continue
         low = text.lower()
-        human_only = any(sig in low for sig in HUMAN_ONLY_SIGNALS)
+        if seen_doc is None:
+            seen_doc = doc
+        # Accumulate across docs: a generic CONTRIBUTING.md must not mask a
+        # README that says "human submissions only" further down the list.
+        human_only = human_only or any(sig in low for sig in HUMAN_ONLY_SIGNALS)
         for path, signals in INTAKE_SIGNALS.items():
             if any(sig in low for sig in signals):
                 return path, doc, human_only
-        # Doc exists but no intake signal matched: keep looking, but remember
-        # that we at least saw a doc so 'unknown' is honest, not a fetch miss.
-        return "unknown", doc, human_only
-    return "unknown", None, False
+        # Doc exists but no intake signal matched: keep looking, remembering
+        # we at least saw a doc so 'unknown' is honest, not a fetch miss.
+    return "unknown", seen_doc, human_only
 
 
 def fit_score(repo_full, description, cfg):
@@ -411,7 +416,10 @@ def cmd_scan(args):
         if cand["lane"] == "query" and cand["stars"] < cfg["min_stars"]:
             dropped["stars"] += 1
             continue
-        if cand["fit_score"] < cfg["fit_floor"]:
+        # Both floors are query-lane recall heuristics: a watchlist entry is
+        # hand-curated (and carries no description for fit_score to read), so
+        # it bypasses the fit floor exactly like it bypasses the star floor.
+        if cand["lane"] == "query" and cand["fit_score"] < cfg["fit_floor"]:
             dropped["fit"] += 1
             continue
         batch.add(key)
@@ -421,13 +429,23 @@ def cmd_scan(args):
     limit = args.limit or cfg["emit_cap"]
     kept = kept[:limit]
 
-    today = now.date().isoformat()
-    for cand in kept:
-        seen[cand["repo"].lower()] = today
-    cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-    state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
-    state["last_run"] = now.isoformat()
-    write_json_atomic(state_file, state)
+    if errors and not raw:
+        # Every request failed and nothing came back — advancing last_run now
+        # would silently skip this window forever. Keep the old stamp so the
+        # next scan re-covers it (the seen-store dedups any overlap).
+        print(
+            "WARN all lanes errored with nothing retrieved — "
+            "keeping last_run so this window is re-scanned next time",
+            file=sys.stderr,
+        )
+    else:
+        today = now.date().isoformat()
+        for cand in kept:
+            seen[cand["repo"].lower()] = today
+        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+        state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
+        state["last_run"] = now.isoformat()
+        write_json_atomic(state_file, state)
 
     flagged = sum(1 for c in kept if c["flagged"])
     payload = {

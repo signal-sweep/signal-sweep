@@ -482,13 +482,23 @@ def cmd_scan(args):
     limit = args.limit or cfg["emit_cap"]
     kept = capped[:limit]
 
-    today = now.date().isoformat()
-    for cand in kept:
-        seen[cand["url"]] = today
-    cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-    state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
-    state["last_run"] = now.isoformat()
-    write_json_atomic(state_file, state)
+    if errors and not raw:
+        # Every request failed and nothing came back — advancing last_run now
+        # would silently skip this window forever. Keep the old stamp so the
+        # next scan re-covers it (the seen-store dedups any overlap).
+        print(
+            "WARN all lanes errored with nothing retrieved — "
+            "keeping last_run so this window is re-scanned next time",
+            file=sys.stderr,
+        )
+    else:
+        today = now.date().isoformat()
+        for cand in kept:
+            seen[cand["url"]] = today
+        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+        state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+        state["last_run"] = now.isoformat()
+        write_json_atomic(state_file, state)
 
     by_kind = {}
     by_match_type = {}
