@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from sweepcore import gh  # noqa: E402
+from sweepcore import append_ledger, gh  # noqa: E402
 
 LEDGER_PATH = Path("state/announced_log.jsonl")
 BRIEF_PATH = Path("release_brief.json")
@@ -130,8 +130,10 @@ def cmd_brief(args):
         cmp_data, cmp_err = gh(["api", f"repos/{repo}/compare/{prev}...{tag}"])
         if not cmp_err and isinstance(cmp_data, dict):
             raw = cmp_data.get("commits", []) or []
+            # `or [""]` guards commits with an empty message (git allows them
+            # via --allow-empty-message); bucket_commits skips falsy subjects.
             commits = [
-                c.get("commit", {}).get("message", "").splitlines()[0]
+                (c.get("commit", {}).get("message", "").splitlines() or [""])[0]
                 for c in raw
                 if c.get("commit")
             ][:MAX_COMMITS]
@@ -181,15 +183,13 @@ def cmd_brief(args):
 
 
 def cmd_mark_announced(args):
-    LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "version": args.version,
         "channel": args.channel,
         "note": args.note or "",
     }
-    with LEDGER_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    append_ledger(LEDGER_PATH, entry)
     print(f"LEDGER_OK {args.version} -> {args.channel}")
     return 0
 

@@ -10,11 +10,13 @@ gate guard that is this project's identity.
 Run: python -m unittest discover -s modules/thread_sweep -p 'test_*.py'
 """
 
+import argparse
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Import the module by path so the test runs from any cwd. thread_sweep itself
 # adds modules/ to sys.path to find sweepcore; replicate that here first.
@@ -157,6 +159,129 @@ class NoAutoPostTests(unittest.TestCase):
         # No submit/post/comment outbound subcommand.
         for banned in ('add_parser("submit', 'add_parser("post', 'add_parser("comment'):
             self.assertNotIn(banned, src)
+
+
+class FilterCandidatesTests(unittest.TestCase):
+    def _cfg(self, **over):
+        cfg = {"own_login": "me", "own_repo": "me/proj", "min_stars": 300}
+        cfg.update(over)
+        return cfg
+
+    def _cand(self, **over):
+        cand = {
+            "url": "https://github.com/acme/widgets/issues/1",
+            "author": "someone",
+            "repo": "acme/widgets",
+            "stars": 800,
+            "lane": "query",
+        }
+        cand.update(over)
+        return cand
+
+    def test_each_drop_reason_is_counted(self):
+        raw = [
+            self._cand(),  # kept
+            self._cand(),  # same url again -> dup
+            self._cand(url="https://x/posted"),  # in posted ledger
+            self._cand(url="https://x/seen"),  # in seen store
+            self._cand(url="https://x/own-author", author="me"),  # own login
+            self._cand(url="https://x/own-repo", repo="me/proj"),  # own repo
+            self._cand(url="https://x/small", stars=10),  # under star floor
+        ]
+        kept, dropped = ts.filter_candidates(
+            raw, {"https://x/seen": "2026-01-01"}, {"https://x/posted"}, self._cfg()
+        )
+        self.assertEqual([c["url"] for c in kept], [raw[0]["url"]])
+        self.assertEqual(
+            dropped, {"seen": 1, "posted": 1, "stars": 1, "own": 2, "dup": 1}
+        )
+
+    def test_watchlist_lane_bypasses_star_floor(self):
+        raw = [self._cand(stars=1, lane="watchlist")]
+        kept, dropped = ts.filter_candidates(raw, {}, set(), self._cfg())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped["stars"], 0)
+
+    def test_pure_no_input_mutation(self):
+        seen = {"https://x/seen": "2026-01-01"}
+        ts.filter_candidates([self._cand()], seen, set(), self._cfg())
+        self.assertEqual(seen, {"https://x/seen": "2026-01-01"})
+
+
+class CapPerRepoTests(unittest.TestCase):
+    def test_overflow_is_capped_and_counted(self):
+        kept = [{"repo": "acme/widgets", "url": f"https://x/{i}"} for i in range(3)] + [
+            {"repo": "other/repo", "url": "https://x/o"}
+        ]
+        dropped = {}
+        capped = ts.cap_per_repo(kept, 2, dropped)
+        self.assertEqual(len(capped), 3)  # 2 from acme + 1 from other
+        self.assertEqual(dropped["repo_cap"], 1)
+
+
+class SearchWindowTests(unittest.TestCase):
+    def test_query_uses_inclusive_date_boundary(self):
+        """GitHub date qualifiers are day-granular: '>' would skip everything
+        created later on the last-run day itself, so the query must use '>='."""
+        captured = []
+
+        def fake_graphql(query, **variables):
+            captured.append(variables)
+            return {"data": {"search": {"nodes": []}}}, None
+
+        cfg = {
+            "own_repo": "me/proj",
+            "queries": {"memory": {"phrases": ["agent memory"]}},
+            "per_query": 5,
+        }
+        with mock.patch.object(ts, "gh_graphql", side_effect=fake_graphql):
+            ts.search_lane(cfg, "2026-07-01", [])
+        self.assertTrue(captured)
+        for variables in captured:
+            self.assertIn("created:>=2026-07-01", variables["q"])
+            self.assertNotIn("created:>2026-07-01", variables["q"])
+
+
+class BlackoutHoldsWindowTests(unittest.TestCase):
+    """A scan where every request fails must not advance last_run — advancing
+    would silently skip the failed window forever."""
+
+    def _run_scan(self, tmp, graphql):
+        cfg = {
+            "own_login": "me",
+            "own_repo": "me/proj",
+            "queries": {"memory": {"phrases": ["agent memory"]}},
+            "state_dir": str(Path(tmp) / "state"),
+            "candidates_file": str(Path(tmp) / "candidates.json"),
+        }
+        cfg_path = Path(tmp) / "config.json"
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        state_file = Path(tmp) / "state" / "sweep_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        old_stamp = "2026-07-01T00:00:00+00:00"
+        state_file.write_text(
+            json.dumps({"last_run": old_stamp, "seen": {}}), encoding="utf-8"
+        )
+        args = argparse.Namespace(
+            config=str(cfg_path), days=None, limit=None, dry_run=False
+        )
+        with mock.patch.object(ts, "gh_graphql", side_effect=graphql):
+            ts.cmd_scan(args)
+        return old_stamp, json.loads(state_file.read_text(encoding="utf-8"))
+
+    def test_total_failure_keeps_last_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, state = self._run_scan(
+                tmp, lambda query, **kw: (None, "HTTP 500 boom")
+            )
+            self.assertEqual(state["last_run"], old)
+
+    def test_clean_empty_scan_advances_last_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, state = self._run_scan(
+                tmp, lambda query, **kw: ({"data": {"search": {"nodes": []}}}, None)
+            )
+            self.assertNotEqual(state["last_run"], old)
 
 
 if __name__ == "__main__":

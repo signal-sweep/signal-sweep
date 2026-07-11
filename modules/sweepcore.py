@@ -98,9 +98,13 @@ def density_counts(ledger_file):
                 continue
             try:
                 when = datetime.fromisoformat(json.loads(line)["date"])
-            except (json.JSONDecodeError, KeyError, ValueError):
+                if when.tzinfo is None:
+                    # A hand-edited or migrated ledger line may carry a naive
+                    # date; treat it as UTC rather than crashing the whole run.
+                    when = when.replace(tzinfo=timezone.utc)
+                age = (now - when).days
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                 continue
-            age = (now - when).days
             for window in counts:
                 if age <= window:
                     counts[window] += 1
@@ -184,6 +188,12 @@ def http_get(url, timeout=15, headers=None, retries=2, backoff_base=2.0):
     for a whole run); other failures return immediately. err is None only on a
     response that was read; non-None is a short description for the caller's
     errors[] list."""
+    scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+    if scheme not in ("http", "https"):
+        # Defence in depth: nothing in this codebase should ever ask for a
+        # file://, ftp:// or other non-web scheme; refuse rather than let
+        # urllib service it.
+        return None, "", f"unsupported url scheme: {scheme or '(none)'}"
     hdrs = {"User-Agent": DEFAULT_UA}
     if headers:
         hdrs.update(headers)

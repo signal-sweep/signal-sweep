@@ -74,6 +74,7 @@
     "per_source_cap": 4,
     "hn_min_points": 2
   },
+  "request_delay_seconds": 0.5,
   "state_dir": "state",
   "candidates_file": "candidates.json"
 }

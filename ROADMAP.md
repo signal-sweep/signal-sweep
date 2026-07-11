@@ -4,7 +4,7 @@ Direction, not a promise. Every module runs the same five-stage pipeline (**sign
 
 ## Shared core
 
-The per-module pipeline sits on `modules/sweepcore.py` — the dedup, ledger, state, `gh`, HTTP (with 429/503 Retry-After backoff), and relevance-tiering primitives, imported by every module so gate and ledger semantics are identical by construction. New modules reuse it instead of copying it.
+The per-module pipeline sits on `modules/sweepcore.py` — the dedup, ledger, state, `gh`, HTTP (with 429/503 Retry-After backoff), and relevance-tiering primitives. Each module imports the ones it needs, so where two modules do the same job (dedup, ledger, tiering) they do it identically. New modules reuse it instead of copying it.
 
 ## Next
 

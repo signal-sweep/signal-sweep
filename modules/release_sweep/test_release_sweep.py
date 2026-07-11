@@ -117,6 +117,42 @@ class PreviousTagTests(unittest.TestCase):
             self.assertIsNone(rs.previous_tag("o/r", "v1"))
 
 
+class BriefEmptyMessageTests(unittest.TestCase):
+    def test_empty_commit_message_does_not_crash_brief(self):
+        # git permits empty commit messages (--allow-empty-message); the
+        # subject extraction must not IndexError on "".splitlines() == [].
+        rel = {
+            "tagName": "v2.0.0",
+            "name": "v2.0.0",
+            "publishedAt": "2026-07-01T00:00:00Z",
+            "body": "notes",
+            "url": "https://github.com/o/r/releases/tag/v2.0.0",
+        }
+        cmp_payload = {
+            "total_commits": 2,
+            "files": [],
+            "commits": [
+                {"commit": {"message": ""}},
+                {"commit": {"message": "feat: add thing\n\nbody"}},
+            ],
+        }
+        gh_seq = [(rel, None), (cmp_payload, None)]
+        with tempfile.TemporaryDirectory() as tmp:
+            chan = Path(tmp) / "channels.json"
+            chan.write_text(
+                json.dumps({"channels": [{"name": "blog"}]}), encoding="utf-8"
+            )
+            args = mock.Mock(config=str(chan), repo="o/r", tag="v2.0.0", since="v1.0.0")
+            with (
+                mock.patch.object(rs, "gh", side_effect=gh_seq),
+                mock.patch.object(rs, "BRIEF_PATH", Path(tmp) / "brief.json"),
+            ):
+                rc = rs.cmd_brief(args)
+            brief = json.loads((Path(tmp) / "brief.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0)
+        self.assertIn("add thing", brief["highlights"]["feat"])
+
+
 class NoAutoPostTests(unittest.TestCase):
     """release-sweep assembles material and records announcements; it never
     posts. mark-announced only RECORDS an announcement the human already made.
