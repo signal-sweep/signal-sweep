@@ -80,6 +80,16 @@ python mention_sweep.py mark-posted --url <mention-url> --kind correct --comment
 
 The example config is a real one: the match strings and own-repo exclusions for the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) and [signal-sweep](https://github.com/signal-sweep/signal-sweep) projects.
 
+### When the window advances
+
+`last_run` is a claim about coverage: everything published after it has been looked at. A scan earns a new one only by proving it covered the window — at least one thread search came back and none failed.
+
+Only lane 1 is time-scoped, so only lane 1 earns or holds the marker. Code search has no date filter, so a code-lane failure loses no stretch of time; it is reported in the digest but never freezes the window, which matters because `gh search code` is the lane most likely to stay rate-limited for a while.
+
+A search that came back holding nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a search that errored, or a lane that never issued a search at all. Partial failure counts as failure — if one match string answers while the next errors, the run holds, and the seen-store keeps the already-surfaced mentions out of the re-scan. A run with no stored marker that fails writes no marker either, rather than inventing one.
+
+Two things stop a clean run from advancing the marker, and it is the same reason twice. The window started after the marker, so a stretch in front of it went unread. `--days 3` against a 30-day-old marker leaves 27 uncovered days, and stamping `now` would swallow them silently, so the old marker stands and the next default run picks the gap back up. A marker that no longer parses does the same damage from the other end: the scan falls back to the default window with no way to tell whether that reaches far enough back, so the unreadable stamp is kept and the `WARN unreadable last_run` line repeats every run until you fix or clear it. A held run says so on stderr and sets `window_held` in the digest.
+
 ## Driving it with an agent
 
 [SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, classify, draft engage/correct stubs, then a hard per-comment approval gate before anything posts. Port the same shape to any agent runtime; the load-bearing parts are the gate and the ledger, not the assistant.

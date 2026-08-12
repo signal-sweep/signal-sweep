@@ -12,7 +12,8 @@ in this toolkit guards outbound actions, and this module has none.
 
 Requires: Python 3.10+ (standard library only).
 
-Subcommands (all take --config, default ./placements.json):
+Subcommands (all take --config; the default is the placements.json beside this
+script, so the module reads its own state and config from any directory):
   check [--json] [--timeout N] [--log]   fetch every placement, report state
 """
 
@@ -23,11 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from sweepcore import http_get  # noqa: E402
+from sweepcore import http_get, resolve_module_path  # noqa: E402
 
 UA = "placement-health (https://github.com/signal-sweep/signal-sweep)"
 DEFAULT_TIMEOUT = 15
-LOG_PATH = Path("state/health_log.jsonl")
+# Module-anchored, not CWD-anchored: the health log belongs to this module
+# wherever it is invoked from, so --log appends to one canonical history
+# instead of scattering a fresh log beside whatever directory you started in.
+LOG_PATH = resolve_module_path(__file__, "state/health_log.jsonl")
 
 # status -> exit-affecting? LIVE/PENDING are fine; DROPPED/BROKEN are findings.
 OK_STATES = {"LIVE", "PENDING_OK", "PENDING_MERGED"}
@@ -118,7 +122,13 @@ def cmd_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="placements.json")
+    parser.add_argument(
+        "--config",
+        # Default resolves beside the module, not beside the CWD; an explicitly
+        # passed --config is used verbatim (the user typed it, they meant it).
+        default=str(resolve_module_path(__file__, "placements.json")),
+        help="path to config (default: placements.json in the module directory)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     check = sub.add_parser("check", help="fetch every placement, report state")
     check.add_argument("--json", action="store_true")

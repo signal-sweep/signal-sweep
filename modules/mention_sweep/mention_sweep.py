@@ -31,7 +31,8 @@ downstream as data, never instructions.
 
 Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`).
 
-Subcommands (all take --config, default ./config.json):
+Subcommands (all take --config; the default is the config.json beside this
+script, so the module reads its own state and config from any directory):
   scan [--days N] [--limit N] [--dry-run]   run both lanes, write candidates
   density                                    posting counts from the ledger
   mark-posted --url U --kind K [--comment-file F]   record a posted reply
@@ -46,11 +47,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    LaneReport,
     append_ledger,
     density_counts,
+    earned_stamp,
     gh_graphql,
+    hold_reason,
     load_state,
+    note_fetch_ok,
     posted_urls,
+    resolve_module_path,
+    window_start,
     write_json_atomic,
 )
 
@@ -150,7 +157,9 @@ def load_config(path):
 
 
 def state_paths(cfg):
-    state_dir = Path(cfg["state_dir"])
+    # Module-anchored, not CWD-anchored: this module has exactly one canonical
+    # state dir wherever it is invoked from. See sweepcore.resolve_module_path.
+    state_dir = resolve_module_path(__file__, cfg["state_dir"])
     return (
         state_dir,
         state_dir / "mention_sweep_state.json",
@@ -329,7 +338,12 @@ def code_hit_to_candidate(hit, term):
 
 
 def thread_lane(cfg, since_date, errors):
-    """Lane 1: per-match-string GraphQL search over issues and discussions."""
+    """Lane 1: per-match-string GraphQL search over issues and discussions.
+
+    This is the only lane the last_run window governs, so `errors` is a
+    sweepcore.LaneReport in a real scan: every search that comes back is
+    counted, which is what separates a covered-but-empty window from one that
+    was never searched. A plain list still works (nothing is counted)."""
     results = []
     gql = (
         "query($q:String!,$n:Int!){ search(query:$q, type:%s, first:$n)"
@@ -348,6 +362,7 @@ def thread_lane(cfg, since_date, errors):
             if err:
                 errors.append(f"{term}/{kind}: {err}")
                 continue
+            note_fetch_ok(errors)
             for node in (data.get("data", {}).get("search", {}) or {}).get("nodes", []):
                 cand = node_to_candidate(node, term, "thread")
                 if cand:
@@ -359,7 +374,12 @@ def code_lane(cfg, errors):
     """Lane 2: `gh search code` for each match string. Surfaces listings,
     awesome-lists, README references, manifests where the project appears.
     GitHub code search has no created-at filter, so the seen-store and human
-    gate are the freshness backstop here (not a time window)."""
+    gate are the freshness backstop here (not a time window).
+
+    Because this lane has no window, it holds no marker and takes a plain
+    errors list: a code-search failure loses no stretch of time, and gating the
+    thread lane's marker on it would freeze that marker for good the first time
+    code search stayed rate-limited."""
     results = []
     if not cfg.get("scan_code_lane", True):
         return results
@@ -425,16 +445,23 @@ def cmd_scan(args):
         return 0
 
     state = load_state(state_file)
-    if args.days is not None:
-        since = now - timedelta(days=args.days)
-    elif state.get("last_run"):
-        since = datetime.fromisoformat(state["last_run"])
-    else:
-        since = now - timedelta(days=cfg["default_window_days"])
+    # A marker that no longer parses re-windows to the default with a warning
+    # rather than raising out of the scan; sweepcore.window_start owns the rule.
+    since = window_start(
+        state.get("last_run"),
+        cfg["default_window_days"],
+        now,
+        args.days,
+        label="mention-sweep",
+    )
     since_date = since.strftime("%Y-%m-%d")
 
-    errors = []
-    raw = thread_lane(cfg, since_date, errors) + code_lane(cfg, errors)
+    # Only the thread lane reads the window, so only its report can earn (or
+    # hold) the marker. The code lane is untimed and reports separately.
+    report = LaneReport()
+    code_errors = []
+    raw = thread_lane(cfg, since_date, report) + code_lane(cfg, code_errors)
+    errors = list(report) + code_errors
 
     # Precision pass: downgrade bare-name hits the body does not corroborate to
     # 'name-unconfirmed' so the likely-namesake noise ranks last, not first.
@@ -482,23 +509,30 @@ def cmd_scan(args):
     limit = args.limit or cfg["emit_cap"]
     kept = capped[:limit]
 
-    if errors and not raw:
-        # Every request failed and nothing came back — advancing last_run now
-        # would silently skip this window forever. Keep the old stamp so the
-        # next scan re-covers it (the seen-store dedups any overlap).
+    # The marker advances only on a thread lane that proved it covered this
+    # window: at least one search came back and none failed. Zero mentions from
+    # searches that came back is a real, empty window and advances; zero because
+    # the searches errored, or because no search was made at all, does NOT —
+    # that stretch was never looked at, and moving the marker over it loses it
+    # silently and permanently. A run with no stored marker that fails writes no
+    # marker either, rather than inventing one.
+    held = not report.clean
+    today = now.date().isoformat()
+    for cand in kept:
+        # Retrieved and shown to the human, so a re-scan of a held window will
+        # not re-surface it; only the never-retrieved rest comes back.
+        seen[cand["url"]] = today
+    cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+    state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+    if held:
         print(
-            "WARN all lanes errored with nothing retrieved — "
-            "keeping last_run so this window is re-scanned next time",
+            f"WARN {hold_reason(report)} — keeping last_run so this window "
+            "is re-scanned next time",
             file=sys.stderr,
         )
     else:
-        today = now.date().isoformat()
-        for cand in kept:
-            seen[cand["url"]] = today
-        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-        state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
-        state["last_run"] = now.isoformat()
-        write_json_atomic(state_file, state)
+        state["last_run"] = earned_stamp(state.get("last_run"), since, now)
+    write_json_atomic(state_file, state)
 
     by_kind = {}
     by_match_type = {}
@@ -509,6 +543,9 @@ def cmd_scan(args):
     payload = {
         "scanned_at": now.isoformat(),
         "window_since": since_date,
+        # True when this run did not earn the marker: the thread slice of this
+        # digest is incomplete and the same window is re-scanned next run.
+        "window_held": held,
         "by_kind": by_kind,
         "by_match_type": by_match_type,
         "posting_density": density_counts(ledger_file),
@@ -516,7 +553,7 @@ def cmd_scan(args):
         "errors": errors,
         "candidates": kept,
     }
-    out = Path(cfg["candidates_file"])
+    out = resolve_module_path(__file__, cfg["candidates_file"])
     out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     dens = payload["posting_density"]
@@ -559,7 +596,11 @@ def cmd_mark_posted(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", default="config.json", help="path to config (default ./config.json)"
+        "--config",
+        # Default resolves beside the module, not beside the CWD; an explicitly
+        # passed --config is used verbatim (the user typed it, they meant it).
+        default=str(resolve_module_path(__file__, "config.json")),
+        help="path to config (default: config.json in the module directory)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     scan = sub.add_parser("scan", help="run both lanes, write candidates JSON")

@@ -29,7 +29,7 @@ The scanner is recall; you are precision. For each candidate ask:
 
 ```bash
 cp config.example.json config.json    # edit for your project
-python thread_sweep.py scan --dry-run --days 7   # preview, state untouched
+python thread_sweep.py scan --dry-run --days 7   # preview, writes nothing at all
 python thread_sweep.py scan                      # real run
 python thread_sweep.py density
 python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --comment-file reply.md
@@ -51,6 +51,14 @@ python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --commen
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
 
 The example config is a real one: the topic groups the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project actually sweeps with.
+
+### When the window advances
+
+`last_run` is a claim about coverage: everything published after it has been looked at. A scan earns a new one only by proving it covered the window — at least one search came back and none failed. Both lanes read this window, so both have to be clean.
+
+A search that came back holding nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a search that errored, or a run that never issued a search at all because nothing was configured to query. Partial failure counts as failure — if lane 2 answers while lane 1 errors, the whole run holds, and the seen-store keeps the already-surfaced threads out of the re-scan. A run with no stored marker that fails writes no marker either, rather than inventing one.
+
+Two things stop a clean run from advancing the marker, and it is the same reason twice. The window started after the marker, so a stretch in front of it went unread. `--days 3` against a 30-day-old marker leaves 27 uncovered days, and stamping `now` would swallow them silently, so the old marker stands and the next default run picks the gap back up. A marker that no longer parses does the same damage from the other end: the scan falls back to the default window with no way to tell whether that reaches far enough back, so the unreadable stamp is kept and the `WARN unreadable last_run` line repeats every run until you fix or clear it. A held run says so on stderr and sets `window_held` in the digest.
 
 ## Driving it with an agent
 

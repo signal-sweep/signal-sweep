@@ -25,7 +25,7 @@ Point it at your repo and your topics. It finds open issues and discussions acro
 ```bash
 cd modules/thread_sweep
 cp config.example.json config.json    # your repo, your topics, your search phrasings
-python thread_sweep.py scan --dry-run --days 30   # preview, no state written
+python thread_sweep.py scan --dry-run --days 30   # preview, writes nothing at all
 python thread_sweep.py scan                       # real run: writes the shortlist, marks seen
 python thread_sweep.py density                    # how much you've posted lately
 ```

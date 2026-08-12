@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +40,48 @@ class StateTests(unittest.TestCase):
             with mock.patch("sys.stderr", io.StringIO()):
                 self.assertEqual(sc.load_state(p), {"last_run": None, "seen": {}})
 
+    def test_load_state_wrong_shape_resets(self):
+        # Valid JSON that is not an object still breaks every caller (they all
+        # do state.get(...)), so the documented "reset cleanly if corrupt"
+        # contract has to cover shape, not just parseability.
+        for payload in ("[]", '["a", "b"]', '"a string"', "42", "null", "true"):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as tmp:
+                    p = Path(tmp) / "s.json"
+                    p.write_text(payload, encoding="utf-8")
+                    err = io.StringIO()
+                    with mock.patch("sys.stderr", err):
+                        state = sc.load_state(p)
+                    self.assertEqual(state, {"last_run": None, "seen": {}})
+                    # the reset stays visible rather than silently swallowing
+                    self.assertIn("WARN", err.getvalue())
+
+    def test_load_state_malformed_json_resets_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "s.json"
+            p.write_text("{not json", encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                state = sc.load_state(p)
+            self.assertEqual(state, {"last_run": None, "seen": {}})
+            self.assertIn("WARN", err.getvalue())
+
+    def test_load_state_valid_dict_returned_untouched(self):
+        # Control for the two resets above: a well-shaped state must survive
+        # verbatim, with no warning emitted.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "s.json"
+            state = {
+                "last_run": "2026-06-28T00:00:00+00:00",
+                "seen": {"https://example.invalid/1": "2026-06-28"},
+                "extra": [1, 2, 3],
+            }
+            p.write_text(json.dumps(state), encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                self.assertEqual(sc.load_state(p), state)
+            self.assertEqual(err.getvalue(), "")
+
     def test_load_state_valid_roundtrips(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "s.json"
@@ -56,6 +99,104 @@ class StateTests(unittest.TestCase):
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"a": 1})
             # no leftover .tmp sibling
             self.assertEqual(list(p.parent.glob("*.tmp")), [])
+
+
+class WindowMarkerTests(unittest.TestCase):
+    """The earned-marker rule every scanning module shares.
+
+    A last_run marker claims coverage, so it may only move when the run proved
+    it covered the window. The opposite failure is equally real: a marker that
+    never moves re-scans a widening window forever, so a fetch that came back
+    empty must still advance.
+    """
+
+    NOW = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+
+    def test_lane_report_is_clean_only_after_a_fetch_with_no_error(self):
+        report = sc.LaneReport()
+        self.assertFalse(report.clean)  # nothing fetched yet
+        report.fetch_ok()
+        self.assertTrue(report.clean)  # fetched, no errors: a covered window
+        report.append("boom")
+        self.assertFalse(report.clean)  # one failure taints the whole run
+
+    def test_lane_report_with_errors_but_no_fetch_is_not_clean(self):
+        report = sc.LaneReport()
+        report.append("boom")
+        self.assertFalse(report.clean)
+
+    def test_note_fetch_ok_is_a_no_op_on_a_plain_list(self):
+        # Lane helpers are called with a bare list in tests and ad-hoc use.
+        errors = []
+        sc.note_fetch_ok(errors)  # must not raise
+        self.assertEqual(errors, [])
+
+    def test_note_fetch_ok_counts_on_a_lane_report(self):
+        report = sc.LaneReport()
+        sc.note_fetch_ok(report)
+        self.assertEqual(report.fetches_ok, 1)
+
+    def test_hold_reason_distinguishes_failure_from_no_request(self):
+        failed = sc.LaneReport()
+        failed.append("HTTP 500")
+        self.assertIn("failed", sc.hold_reason(failed))
+        self.assertIn("no request", sc.hold_reason(sc.LaneReport()))
+
+    def test_parse_stamp_handles_absent_naive_and_junk(self):
+        self.assertIsNone(sc.parse_stamp(None))
+        self.assertIsNone(sc.parse_stamp(""))
+        self.assertIsNone(sc.parse_stamp("last tuesday"))
+        self.assertIsNone(sc.parse_stamp(42))
+        naive = sc.parse_stamp("2026-07-01T00:00:00")
+        self.assertEqual(naive.tzinfo, timezone.utc)
+
+    def test_window_start_prefers_the_days_override(self):
+        since = sc.window_start("2026-07-01T00:00:00+00:00", 14, self.NOW, 3)
+        self.assertEqual(since, self.NOW - timedelta(days=3))
+
+    def test_window_start_uses_the_stored_marker(self):
+        since = sc.window_start("2026-07-01T00:00:00+00:00", 14, self.NOW)
+        self.assertEqual(since, datetime(2026, 7, 1, tzinfo=timezone.utc))
+
+    def test_window_start_falls_back_to_the_default_on_a_first_run(self):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            since = sc.window_start(None, 14, self.NOW)
+        self.assertEqual(since, self.NOW - timedelta(days=14))
+        # Absent is normal, not a fault: no warning for a genuine first run.
+        self.assertEqual(err.getvalue(), "")
+
+    def test_window_start_warns_before_re_windowing_a_rotted_marker(self):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            since = sc.window_start("last tuesday", 14, self.NOW, label="hn")
+        self.assertEqual(since, self.NOW - timedelta(days=14))
+        self.assertIn("unreadable last_run for hn", err.getvalue())
+
+    def test_earned_stamp_advances_when_the_window_reached_the_marker(self):
+        prior = "2026-07-25T00:00:00+00:00"
+        since = datetime(2026, 7, 25, tzinfo=timezone.utc)
+        self.assertEqual(sc.earned_stamp(prior, since, self.NOW), self.NOW.isoformat())
+
+    def test_earned_stamp_holds_when_the_window_started_after_the_marker(self):
+        # A narrowed run leaves the stretch in front of the window unread;
+        # stamping `now` would swallow it silently and permanently.
+        prior = "2026-07-01T00:00:00+00:00"
+        since = datetime(2026, 7, 30, tzinfo=timezone.utc)
+        self.assertEqual(sc.earned_stamp(prior, since, self.NOW), prior)
+
+    def test_earned_stamp_holds_a_rotted_marker_verbatim(self):
+        since = self.NOW - timedelta(days=14)
+        self.assertEqual(
+            sc.earned_stamp("last tuesday", since, self.NOW), "last tuesday"
+        )
+
+    def test_earned_stamp_lays_down_a_first_marker(self):
+        # Absent is not unreadable: with no earlier marker there is nothing to
+        # fall short of, so a completed fetch must stamp or the run re-scans the
+        # default window forever.
+        since = self.NOW - timedelta(days=14)
+        self.assertEqual(sc.earned_stamp(None, since, self.NOW), self.NOW.isoformat())
 
 
 class LedgerTests(unittest.TestCase):

@@ -27,7 +27,8 @@ confirms you STAY listed.
 
 Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`).
 
-Subcommands (all take --config, default ./config.json):
+Subcommands (all take --config; the default is the config.json beside this
+script, so the module reads its own state and config from any directory):
   scan [--days N] [--limit N] [--dry-run]   run both lanes, write candidates
   mark-submitted --url U --list L [--note ...]   record a submission
   log                                        show recorded submissions
@@ -41,10 +42,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    LaneReport,
     append_ledger,
+    earned_stamp,
     gh,
+    hold_reason,
     http_get,
     load_state,
+    note_fetch_ok,
+    resolve_module_path,
+    window_start,
     write_json_atomic,
 )
 
@@ -157,12 +164,20 @@ def load_config_for_dry_run(path):
 
 
 def state_paths(cfg):
-    state_dir = Path(cfg["state_dir"])
+    # Module-anchored, not CWD-anchored: this module has exactly one canonical
+    # state dir wherever it is invoked from. See sweepcore.resolve_module_path.
+    state_dir = resolve_module_path(__file__, cfg["state_dir"])
     return state_dir, state_dir / "list_state.json", state_dir / "submitted_log.jsonl"
 
 
 def search_repos(query, limit, errors):
-    """Lane 1: `gh search repos` for awesome-list / directory repos."""
+    """Lane 1: `gh search repos` for awesome-list / directory repos.
+
+    This is the only lane the pushed-since window governs, so `errors` is a
+    sweepcore.LaneReport in a real scan: a search that comes back is counted
+    even when it matched nothing, which is what separates a covered-but-empty
+    window from one that was never searched. A plain list still works.
+    """
     fields = "fullName,description,stargazersCount,url"
     data, err = gh(
         [
@@ -179,7 +194,13 @@ def search_repos(query, limit, errors):
         errors.append(f"search {query!r}: {err}")
         return []
     if not isinstance(data, list):
+        # gh() yields ("", "") when a non-zero exit writes nothing to stderr, so
+        # the `if err` guard above misses it. Counting that as a covered window
+        # would advance the marker over ground the search never returned. Treat
+        # an unusable payload as the failure it is, BEFORE note_fetch_ok.
+        errors.append(f"search {query!r}: no usable result payload")
         return []
+    note_fetch_ok(errors)
     return data
 
 
@@ -253,7 +274,10 @@ def load_placements(path, errors):
     listed = set()
     if not path:
         return listed
-    p = Path(path)
+    # A relative placements_path (the shipped example is
+    # "../placement_health/placements.json") points at a sibling module, so it
+    # resolves from this module's directory, never from the process CWD.
+    p = resolve_module_path(__file__, path)
     if not p.exists():
         errors.append(f"placements_path not found, dedup skipped: {p}")
         return listed
@@ -356,41 +380,61 @@ def cmd_scan(args):
         print("  lane 2 (watchlist) would classify intake for:")
         for full in cfg["watchlist"] or ["(none configured)"]:
             print(f"    {full}")
+        # Print the RESOLVED paths: a preview that shows a bare relative name
+        # is exactly what let a CWD-anchored write look correct while landing
+        # somewhere else.
         dedup = cfg.get("placements_path")
-        print(f"  dedup vs placements: {dedup or '(none configured)'}")
-        print(f"  candidates would be written to: {cfg['candidates_file']}")
+        dedup_shown = (
+            resolve_module_path(__file__, dedup) if dedup else "(none configured)"
+        )
+        print(f"  dedup vs placements: {dedup_shown}")
+        print(
+            "  candidates would be written to: "
+            f"{resolve_module_path(__file__, cfg['candidates_file'])}"
+        )
         return 0
 
     state = load_state(state_file)
-    if args.days is not None:
-        since = now - timedelta(days=args.days)
-    elif state.get("last_run"):
-        since = datetime.fromisoformat(state["last_run"])
-    else:
-        since = now - timedelta(days=cfg["default_window_days"])
+    # A marker that no longer parses re-windows to the default with a warning
+    # rather than raising out of the scan; sweepcore.window_start owns the rule.
+    since = window_start(
+        state.get("last_run"),
+        cfg["default_window_days"],
+        now,
+        args.days,
+        label="list-sweep",
+    )
     pushed_floor = since.strftime("%Y-%m-%d")
 
-    errors = []
+    # Only lane 1 is time-scoped (pushed:>floor), so only its report can earn or
+    # hold the marker. Lane 2 is a fixed seed list and the placements registry is
+    # a dedup source: neither has a window to lose, and a bad watchlist entry or
+    # a missing placements file would otherwise freeze the marker permanently.
+    report = LaneReport()
+    advisory = []
     raw = []
     # Lane 1: query-first repo search.
     for query in build_queries(cfg, pushed_floor):
-        for node in search_repos(query, cfg["per_query"], errors):
-            cand = build_candidate(node, "query", cfg, errors)
+        for node in search_repos(query, cfg["per_query"], report):
+            cand = build_candidate(node, "query", cfg, advisory)
             if cand:
                 raw.append(cand)
     # Lane 2: seed watchlist (classified the same way).
     for full in cfg["watchlist"]:
         full = full.strip()
         if "/" not in full:
-            errors.append(f"watchlist entry not in owner/name form, skipped: {full!r}")
+            advisory.append(
+                f"watchlist entry not in owner/name form, skipped: {full!r}"
+            )
             continue
-        cand = build_candidate({"repo": full}, "watchlist", cfg, errors)
+        cand = build_candidate({"repo": full}, "watchlist", cfg, advisory)
         if cand:
             raw.append(cand)
 
     seen = state.get("seen", {})
     submitted = submitted_repos(ledger_file)
-    already_listed = load_placements(cfg.get("placements_path"), errors)
+    already_listed = load_placements(cfg.get("placements_path"), advisory)
+    errors = list(report) + advisory
 
     kept = []
     dropped = {"seen": 0, "submitted": 0, "placed": 0, "own": 0, "stars": 0, "fit": 0}
@@ -429,34 +473,44 @@ def cmd_scan(args):
     limit = args.limit or cfg["emit_cap"]
     kept = kept[:limit]
 
-    if errors and not raw:
-        # Every request failed and nothing came back — advancing last_run now
-        # would silently skip this window forever. Keep the old stamp so the
-        # next scan re-covers it (the seen-store dedups any overlap).
+    # The marker advances only on a lane 1 that proved it covered this window:
+    # at least one search came back and none failed. Zero lists from searches
+    # that came back is a real, empty window and advances; zero because the
+    # searches errored, or because no search was made at all, does NOT — that
+    # stretch was never looked at, and moving the marker over it loses it
+    # silently and permanently. A run with no stored marker that fails writes no
+    # marker either, rather than inventing one.
+    held = not report.clean
+    today = now.date().isoformat()
+    for cand in kept:
+        # Retrieved and shown to the human, so a re-scan of a held window will
+        # not re-surface it; only the never-retrieved rest comes back.
+        seen[cand["repo"].lower()] = today
+    cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+    state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
+    if held:
         print(
-            "WARN all lanes errored with nothing retrieved — "
-            "keeping last_run so this window is re-scanned next time",
+            f"WARN {hold_reason(report)} — keeping last_run so this window "
+            "is re-scanned next time",
             file=sys.stderr,
         )
     else:
-        today = now.date().isoformat()
-        for cand in kept:
-            seen[cand["repo"].lower()] = today
-        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-        state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
-        state["last_run"] = now.isoformat()
-        write_json_atomic(state_file, state)
+        state["last_run"] = earned_stamp(state.get("last_run"), since, now)
+    write_json_atomic(state_file, state)
 
     flagged = sum(1 for c in kept if c["flagged"])
     payload = {
         "scanned_at": now.isoformat(),
         "pushed_since": pushed_floor,
+        # True when this run did not earn the marker: the lane-1 slice of this
+        # digest is incomplete and the same window is re-scanned next run.
+        "window_held": held,
         "dropped": dropped,
         "flagged_count": flagged,
         "errors": errors,
         "candidates": kept,
     }
-    out = Path(cfg["candidates_file"])
+    out = resolve_module_path(__file__, cfg["candidates_file"])
     out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     print(
@@ -542,7 +596,11 @@ def cmd_log(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", default="config.json", help="path to config (default ./config.json)"
+        "--config",
+        # Default resolves beside the module, not beside the CWD; an explicitly
+        # passed --config is used verbatim (the user typed it, they meant it).
+        default=str(resolve_module_path(__file__, "config.json")),
+        help="path to config (default: config.json in the module directory)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
