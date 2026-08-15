@@ -13,7 +13,8 @@ per-comment approval gate. This script only retrieves, filters, records.
 
 Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`).
 
-Subcommands (all take --config, default ./config.json):
+Subcommands (all take --config; the default is the config.json beside this
+script, so the module reads its own state and config from any directory):
   scan [--days N] [--limit N] [--dry-run]   run both lanes, write candidates
   density                                    posting counts from the ledger
   mark-posted --url U --pattern P [--comment-file F]   record a posted reply
@@ -28,12 +29,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    LaneReport,
     append_ledger,
     density_counts,
+    earned_stamp,
     gh_graphql,
+    hold_reason,
     load_state,
+    note_fetch_ok,
     posted_urls,
     relevance_tier,
+    resolve_module_path,
+    window_start,
     write_json_atomic,
 )
 
@@ -97,7 +104,9 @@ def load_config(path):
 
 
 def state_paths(cfg):
-    state_dir = Path(cfg["state_dir"])
+    # Module-anchored, not CWD-anchored: this module has exactly one canonical
+    # state dir wherever it is invoked from. See sweepcore.resolve_module_path.
+    state_dir = resolve_module_path(__file__, cfg["state_dir"])
     return state_dir, state_dir / "sweep_state.json", state_dir / "posted_ledger.jsonl"
 
 
@@ -126,7 +135,11 @@ def node_to_candidate(node, pattern, lane, answers_with=""):
 
 
 def search_lane(cfg, since_date, errors):
-    """Lane 1: per-topic GraphQL search over issues and discussions."""
+    """Lane 1: per-topic GraphQL search over issues and discussions.
+
+    `errors` is a sweepcore.LaneReport in a real scan: every search that comes
+    back is counted, so the caller can tell a covered-but-empty window from one
+    that was never searched. A plain list still works (nothing is counted)."""
     results = []
     gql = (
         "query($q:String!,$n:Int!){ search(query:$q, type:%s, first:$n)"
@@ -151,6 +164,7 @@ def search_lane(cfg, since_date, errors):
                 if err:
                     errors.append(f"{pattern}/{kind}: {err}")
                     continue
+                note_fetch_ok(errors)
                 for node in (data.get("data", {}).get("search", {}) or {}).get(
                     "nodes", []
                 ):
@@ -160,8 +174,17 @@ def search_lane(cfg, since_date, errors):
     return results
 
 
-def watchlist_lane(cfg, since_iso, errors):
-    """Lane 2: newest issues + discussions in pinned repos."""
+def watchlist_lane(cfg, since_iso, errors, advisory=None):
+    """Lane 2: newest issues + discussions in pinned repos.
+
+    A malformed watchlist entry is a config typo, not a coverage gap: it is a
+    permanent condition, so routing it to `errors` (the marker-governing
+    LaneReport) would hold the window for good on every future run. It goes to
+    `advisory` instead, matching list_sweep. Genuine fetch failures still go to
+    `errors`, because those DO mean ground was not covered.
+    """
+    if advisory is None:
+        advisory = []
     results = []
     gql = """
     query($owner:String!,$name:String!){
@@ -181,13 +204,16 @@ def watchlist_lane(cfg, since_iso, errors):
     for full in cfg["watchlist"]:
         parts = full.strip().split("/")
         if len(parts) != 2 or not parts[0] or not parts[1]:
-            errors.append(f"watchlist entry not in owner/name form, skipped: {full!r}")
+            advisory.append(
+                f"watchlist entry not in owner/name form, skipped: {full!r}"
+            )
             continue
         owner, name = parts
         data, err = gh_graphql(gql, owner=owner, name=name)
         if err:
             errors.append(f"watchlist {full}: {err}")
             continue
+        note_fetch_ok(errors)
         repo = (data.get("data", {}) or {}).get("repository") or {}
         for section in ("issues", "discussions"):
             for node in (repo.get(section) or {}).get("nodes") or []:
@@ -246,17 +272,29 @@ def cmd_scan(args):
     state_dir, state_file, ledger_file = state_paths(cfg)
     state = load_state(state_file)
     now = datetime.now(timezone.utc)
-    if args.days is not None:
-        since = now - timedelta(days=args.days)
-    elif state.get("last_run"):
-        since = datetime.fromisoformat(state["last_run"])
-    else:
-        since = now - timedelta(days=cfg["default_window_days"])
+    # A marker that no longer parses re-windows to the default with a warning
+    # rather than raising out of the scan; sweepcore.window_start owns the rule.
+    since = window_start(
+        state.get("last_run"),
+        cfg["default_window_days"],
+        now,
+        args.days,
+        label="thread-sweep",
+    )
     since_date = since.strftime("%Y-%m-%d")
     since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    errors = []
-    raw = search_lane(cfg, since_date, errors) + watchlist_lane(cfg, since_iso, errors)
+    # Both lanes read this run's window (lane 1 via created:>=, lane 2 by
+    # comparing createdAt), so both feed the one report that governs the one
+    # shared marker.
+    report = LaneReport()
+    advisory = []
+    raw = search_lane(cfg, since_date, report) + watchlist_lane(
+        cfg, since_iso, report, advisory
+    )
+    # Advisory entries are surfaced to the operator but must not gate the
+    # marker: a config typo is permanent and would freeze the window forever.
+    errors = list(report) + advisory
 
     seen = state.get("seen", {})
     posted = posted_urls(ledger_file)
@@ -271,27 +309,31 @@ def cmd_scan(args):
     limit = args.limit or cfg["emit_cap"]
     kept = capped[:limit]
 
-    blackout = bool(errors) and not raw
+    # The marker advances only on a run that proved it covered this window: at
+    # least one search came back and none failed. Zero candidates from searches
+    # that came back is a real, empty window and advances; zero because the
+    # searches errored, or because no search was made at all (nothing configured
+    # to query), does NOT — that stretch was never looked at, and moving the
+    # marker over it loses it silently and permanently. A run with no stored
+    # marker that fails writes no marker either, rather than inventing one.
+    held = not report.clean
     if not args.dry_run:
-        if blackout:
-            # Every request failed and nothing came back — advancing last_run
-            # now would silently skip this window forever. Keep the old stamp
-            # so the next scan re-covers it (the seen-store dedups any overlap).
+        today = now.date().isoformat()
+        for cand in kept:
+            # Retrieved and shown to the human, so a re-scan of a held window
+            # will not re-surface it; only the never-retrieved rest comes back.
+            seen[cand["url"]] = today
+        cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
+        state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+        if held:
             print(
-                "WARN all lanes errored with nothing retrieved — "
-                "keeping last_run so this window is re-scanned next time",
+                f"WARN {hold_reason(report)} — keeping last_run so this window "
+                "is re-scanned next time",
                 file=sys.stderr,
             )
         else:
-            today = now.date().isoformat()
-            for cand in kept:
-                seen[cand["url"]] = today
-            cutoff = (
-                (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
-            )
-            state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
-            state["last_run"] = now.isoformat()
-            write_json_atomic(state_file, state)
+            state["last_run"] = earned_stamp(state.get("last_run"), since, now)
+        write_json_atomic(state_file, state)
 
     by_tier = {}
     for cand in kept:
@@ -299,17 +341,25 @@ def cmd_scan(args):
     payload = {
         "scanned_at": now.isoformat(),
         "window_since": since_date,
+        # True when this run did not earn the marker: its slice of the digest is
+        # incomplete and the same window is being re-scanned next run.
+        "window_held": held,
         "posting_density": density_counts(ledger_file),
         "by_tier": by_tier,
         "dropped": dropped,
         "errors": errors,
         "candidates": kept,
     }
-    out = Path(cfg["candidates_file"])
-    out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    out = resolve_module_path(__file__, cfg["candidates_file"])
+    # A dry run leaves the disk exactly as it found it. candidates.json is the
+    # human's working digest — the file they are mid-way through triaging — so
+    # overwriting it while announcing "state untouched" destroyed the very thing
+    # the preview was meant to protect. The summary below IS the preview.
+    if not args.dry_run:
+        out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     dens = payload["posting_density"]
-    mode = " DRY-RUN (state untouched)" if args.dry_run else ""
+    mode = " DRY-RUN (nothing written)" if args.dry_run else ""
     print(
         f"THREAD_SWEEP_OK{mode} window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"dropped={dropped} errors={len(errors)}"
@@ -319,7 +369,10 @@ def cmd_scan(args):
         f"{by_tier.get('low', 0)} low"
     )
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
-    print(f"candidates -> {out}")
+    if args.dry_run:
+        print(f"candidates would be written to: {out} (dry run wrote nothing)")
+    else:
+        print(f"candidates -> {out}")
     for err in errors[:5]:
         print(f"WARN {err}", file=sys.stderr)
     return 0
@@ -353,7 +406,11 @@ def cmd_mark_posted(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", default="config.json", help="path to config (default ./config.json)"
+        "--config",
+        # Default resolves beside the module, not beside the CWD; an explicitly
+        # passed --config is used verbatim (the user typed it, they meant it).
+        default=str(resolve_module_path(__file__, "config.json")),
+        help="path to config (default: config.json in the module directory)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     scan = sub.add_parser("scan", help="run both lanes, write candidates JSON")
@@ -367,7 +424,8 @@ def main():
     scan.add_argument(
         "--dry-run",
         action="store_true",
-        help="preview: no seen-marking, no last_run update",
+        help="preview: writes nothing at all (no candidates file, "
+        "no seen-marking, no last_run update)",
     )
     scan.set_defaults(func=cmd_scan)
     dens = sub.add_parser("density", help="posting counts from the ledger")

@@ -64,6 +64,16 @@ python list_sweep.py log                         # show recorded submissions
 
 The example config is real: the lists the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project would target.
 
+### When the window advances
+
+`last_run` is a claim about coverage: everything pushed after it has been looked at. A scan earns a new one only by proving it covered the window — at least one lane-1 search came back and none failed.
+
+Only lane 1 is time-scoped (`pushed:>floor`), so only lane 1 earns or holds the marker. The watchlist is a fixed seed list and `placements_path` is a dedup source; neither has a window to lose, so a malformed watchlist entry or a missing placements file is reported in the digest without freezing the window — otherwise one typo would hold the marker for good.
+
+A search that came back matching nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a search that errored, or a run that never issued one. Partial failure counts as failure — if lane 1 errors while the watchlist still yields candidates, the run holds, and the seen-store keeps the already-surfaced lists out of the re-scan. A run with no stored marker that fails writes no marker either, rather than inventing one.
+
+Two things stop a clean run from advancing the marker, and it is the same reason twice. The window started after the marker, so a stretch in front of it went unread. `--days 3` against a 30-day-old marker leaves 27 uncovered days, and stamping `now` would swallow them silently, so the old marker stands and the next default run picks the gap back up. A marker that no longer parses does the same damage from the other end: the scan falls back to the default window with no way to tell whether that reaches far enough back, so the unreadable stamp is kept and the `WARN unreadable last_run` line repeats every run until you fix or clear it. A held run says so on stderr and sets `window_held` in the digest.
+
 ## Driving it with an agent
 
 [SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, score against the fit bar, draft an entry, then a hard per-submission approval gate before anything is submitted by hand. Port the same shape to any agent runtime; the load-bearing parts are the gate and the ledger, not the assistant.

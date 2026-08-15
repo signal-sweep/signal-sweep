@@ -5,13 +5,15 @@ network, no live gh. Every subprocess.run is patched to return fixture JSON.
 Run: python -m unittest discover -s modules/mention_sweep -p 'test_*.py'
 """
 
+import contextlib
 import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -412,6 +414,232 @@ class NoAutoPostTests(unittest.TestCase):
             self.assertNotIn("--method POST", joined)
             # GraphQL bodies are query (read), never mutation (write).
             self.assertNotIn("mutation", joined)
+
+
+class EarnedWindowTests(unittest.TestCase):
+    """last_run is a claim about coverage, so a run may only advance it after
+    proving it covered the window: at least one thread search came back and none
+    failed. The thread lane is the only lane the window governs — code search
+    has no created-at filter — so it alone earns or holds the marker.
+
+    The old guard asked only "did every request fail AND come back with
+    nothing?", which let three unearned advances through: a partial failure that
+    still returned mentions, a run whose windowed lane never issued a request,
+    and a window narrowed to start after the stored marker. A fourth case did
+    not advance so much as abort — an unparseable marker raised out of the scan.
+    """
+
+    OLD = "2026-07-01T00:00:00+00:00"
+
+    def _setup(self, tmp, state_obj=None, **cfg_overrides):
+        cfg_path, cfg = _write_config(tmp, **cfg_overrides)
+        state_file = Path(cfg["state_dir"]) / "mention_sweep_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        if state_obj is not None:
+            state_file.write_text(json.dumps(state_obj), encoding="utf-8")
+        return cfg_path, cfg, state_file
+
+    def _scan(self, cfg_path, graphql, code=None, days=None, thread_lane=None):
+        args = _Args(config=str(cfg_path), days=days, limit=None, dry_run=False)
+        err = io.StringIO()
+        patches = [
+            mock.patch.object(ms, "gh_graphql", side_effect=graphql),
+            mock.patch.object(
+                ms,
+                "gh_search_code",
+                side_effect=code or (lambda term, limit: ([], None)),
+            ),
+        ]
+        if thread_lane is not None:
+            patches.append(
+                mock.patch.object(ms, "thread_lane", side_effect=thread_lane)
+            )
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(redirect_stderr(err))
+            ms.cmd_scan(args)
+        return err.getvalue()
+
+    @staticmethod
+    def _marker(state_file):
+        if not state_file.exists():
+            return None
+        return json.loads(state_file.read_text(encoding="utf-8")).get("last_run")
+
+    @staticmethod
+    def _digest(cfg):
+        return json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
+
+    # --- fake GraphQL outcomes ---
+    @staticmethod
+    def _ok(query, **kw):
+        """Every search comes back, holding nothing: a real, empty window."""
+        return {"data": {"search": {"nodes": []}}}, None
+
+    @staticmethod
+    def _boom(query, **kw):
+        return None, "HTTP 500 boom"
+
+    def _mixed(self):
+        """The dangerous shape: one search lands, the next fails. Mentions come
+        back, so a raw-count guard reads the run as a success."""
+        calls = []
+
+        def graphql(query, **kw):
+            calls.append(query)
+            if len(calls) == 1:
+                return {
+                    "data": {
+                        "search": {
+                            "nodes": [_issue_node("https://x/1", "loves signal-sweep")]
+                        }
+                    }
+                }, None
+            return None, "HTTP 502 boom"
+
+        return graphql
+
+    def test_partial_failure_holds_the_marker_even_though_mentions_came_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(cfg_path, self._mixed())
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_thread_lane_that_issued_no_search_holds_the_marker(self):
+        # No error, no mentions, no request: the shape of a skipped lane, and
+        # the dangerous one — nothing about it reads as a failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(
+                cfg_path,
+                self._ok,
+                thread_lane=lambda cfg, since_date, errors: [],
+            )
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_total_failure_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(cfg_path, self._boom)
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_successful_empty_scan_still_advances(self):
+        # The guard against over-correcting: a marker that never moves re-scans
+        # a widening window forever. A search that came back holding nothing is
+        # a covered window and must advance.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(cfg_path, self._ok)
+            self.assertNotEqual(self._marker(state_file), self.OLD)
+
+    def test_code_lane_failure_alone_does_not_hold_the_thread_marker(self):
+        # Code search carries no time window, so its failure loses no stretch of
+        # time. Holding on it would freeze the marker for good the first time
+        # code search stayed rate-limited, for no coverage gain at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(
+                cfg_path, self._ok, code=lambda term, limit: ([], "code search 403")
+            )
+            self.assertNotEqual(self._marker(state_file), self.OLD)
+            # The failure is still reported, just not treated as lost coverage.
+            self.assertTrue(
+                any("code/" in e for e in self._digest(cfg)["errors"]),
+                "a code-lane failure must still reach the digest",
+            )
+
+    def test_failed_run_with_no_prior_marker_invents_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(tmp, {"seen": {}})
+            self._scan(cfg_path, self._mixed())
+            self.assertFalse(self._marker(state_file))
+
+    def test_first_clean_run_with_no_prior_marker_lays_one_down(self):
+        # The other direction of the same rule: absent is not unreadable.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(tmp, {"seen": {}})
+            self._scan(cfg_path, self._ok)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(
+                self._marker(state_file)
+            )
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_narrow_days_override_does_not_swallow_the_uncovered_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+            cfg_path, _cfg, state_file = self._setup(tmp, {"last_run": old, "seen": {}})
+            self._scan(cfg_path, self._ok, days=2)
+            self.assertEqual(self._marker(state_file), old)
+
+    def test_wide_days_override_covers_the_marker_and_advances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+            cfg_path, _cfg, state_file = self._setup(tmp, {"last_run": old, "seen": {}})
+            self._scan(cfg_path, self._ok, days=30)
+            self.assertNotEqual(self._marker(state_file), old)
+
+    def test_unreadable_marker_warns_and_re_windows_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg, _state_file = self._setup(
+                tmp, {"last_run": "last tuesday", "seen": {}}
+            )
+            err = self._scan(cfg_path, self._ok)
+            self.assertIn("unreadable last_run", err)
+            floor = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+                "%Y-%m-%d"
+            )
+            self.assertEqual(self._digest(cfg)["window_since"], floor)
+
+    def test_unreadable_marker_is_not_overwritten_by_an_unearned_stamp(self):
+        # The re-windowed run cannot show it reached back to whatever the rotted
+        # marker meant, so stamping `now` would bury the gap in front of the
+        # default window AND destroy the evidence that the marker had rotted.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, _cfg, state_file = self._setup(
+                tmp, {"last_run": "last tuesday", "seen": {}}
+            )
+            self._scan(cfg_path, self._ok)
+            self.assertEqual(self._marker(state_file), "last tuesday")
+
+    def test_held_window_is_reported_in_the_digest_and_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg, _state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            err = self._scan(cfg_path, self._boom)
+            self.assertTrue(self._digest(cfg)["window_held"])
+            self.assertIn("keeping last_run", err)
+
+    def test_clean_run_is_not_flagged_as_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg, _state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(cfg_path, self._ok)
+            self.assertFalse(self._digest(cfg)["window_held"])
+
+    def test_held_window_is_re_covered_by_the_next_run(self):
+        # The consequence that matters: whatever was published during the failed
+        # run is still inside the window the next run asks for.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cfg, _state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}
+            )
+            self._scan(cfg_path, self._boom)
+            self._scan(cfg_path, self._ok)
+            self.assertEqual(self._digest(cfg)["window_since"], self.OLD[:10])
 
 
 class MatchTypeTests(unittest.TestCase):

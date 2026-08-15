@@ -5,11 +5,13 @@ Every gh / subprocess call and every network read is mocked. These tests make
 NO live calls. Run: python -m unittest discover -s modules/list_sweep -p 'test_*.py'
 """
 
+import contextlib
 import importlib.util
 import io
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -266,13 +268,21 @@ class ScanIntegrationTests(unittest.TestCase):
 
         args = mock.Mock(config="config.json", days=30, limit=None, dry_run=False)
 
+        def _search(query, limit, errors):
+            # A search that comes back is a completed fetch, so the stand-in
+            # records one: without it the run reads as "never searched" and the
+            # scan correctly declines to advance its window, which is a
+            # different code path from the one these tests are about.
+            ls.note_fetch_ok(errors)
+            return search_hits
+
         # One query so each mocked hit is processed once (search_repos is mocked
         # to return the same list per query; collapsing to a single query keeps
         # the dedup-bucket counts deterministic).
         with (
             mock.patch.object(ls, "load_config", return_value=cfg),
             mock.patch.object(ls, "build_queries", return_value=["q"]),
-            mock.patch.object(ls, "search_repos", return_value=search_hits),
+            mock.patch.object(ls, "search_repos", side_effect=_search),
             mock.patch.object(ls, "fetch_raw", return_value=doc_text),
         ):
             rc = ls.cmd_scan(args)
@@ -400,6 +410,237 @@ class DryRunTests(unittest.TestCase):
         self.assertFalse(Path(cfg["candidates_file"]).exists())
         # No state directory created.
         self.assertFalse(Path(cfg["state_dir"]).exists())
+
+
+class EarnedWindowTests(unittest.TestCase):
+    """last_run is a claim about coverage, so a run may only advance it after
+    proving it covered the window: at least one lane-1 search came back and none
+    failed. Lane 1 is the only time-scoped lane (pushed:>floor) — the watchlist
+    is a fixed seed list and the placements registry is a dedup source — so
+    lane 1 alone earns or holds the marker.
+
+    The old guard asked only "did every request fail AND come back with
+    nothing?", which let three unearned advances through: a failed search whose
+    watchlist entries still produced candidates, a run whose search lane never
+    issued a query, and a window narrowed to start after the stored marker. A
+    fourth case did not advance so much as abort — an unparseable marker raised
+    out of the scan.
+    """
+
+    OLD = "2026-07-01T00:00:00+00:00"
+
+    def _setup(self, tmp, state_obj=None, **overrides):
+        cfg = _full_config()
+        cfg["state_dir"] = str(Path(tmp) / "state")
+        cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+        cfg["watchlist"] = []
+        cfg["search_keywords"] = ["awesome-claude-code"]  # one query, one fetch
+        cfg.update(overrides)
+        state_file = Path(cfg["state_dir"]) / "list_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        if state_obj is not None:
+            state_file.write_text(json.dumps(state_obj), encoding="utf-8")
+        return cfg, state_file
+
+    def _scan(self, cfg, gh, days=None, queries=None):
+        args = mock.Mock(config="config.json", days=days, limit=None, dry_run=False)
+        err = io.StringIO()
+        patches = [
+            mock.patch.object(ls, "load_config", return_value=cfg),
+            # `gh` (not search_repos) is patched, so the real lane-1 helper runs
+            # and does its own fetch accounting.
+            mock.patch.object(ls, "gh", side_effect=gh),
+            mock.patch.object(ls, "fetch_raw", return_value="Open a pull request."),
+        ]
+        if queries is not None:
+            patches.append(mock.patch.object(ls, "build_queries", return_value=queries))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            ls.cmd_scan(args)
+        return err.getvalue()
+
+    @staticmethod
+    def _marker(state_file):
+        if not state_file.exists():
+            return None
+        return json.loads(state_file.read_text(encoding="utf-8")).get("last_run")
+
+    @staticmethod
+    def _digest(cfg):
+        return json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
+
+    # --- fake gh outcomes ---
+    @staticmethod
+    def _ok(args):
+        """The search comes back matching nothing: a real, empty window."""
+        return [], None
+
+    @staticmethod
+    def _boom(args):
+        return None, "HTTP 500 boom"
+
+    @staticmethod
+    def _silent_failure(args):
+        """gh() yields ("", "") when a non-zero exit writes nothing to stderr.
+        The `if err` guard is falsy here, so this is the shape that slipped
+        past as a covered window."""
+        return None, ""
+
+    def test_search_failing_with_empty_stderr_holds_the_marker(self):
+        # No usable payload means the search did not come back, whatever the
+        # stderr channel says. Counting it as covered advanced the marker over
+        # ground the query never returned.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            self._scan(cfg, self._silent_failure)
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_failed_search_holds_the_marker_even_though_lists_came_back(self):
+        # The dangerous shape: lane 1 fails, the hand-curated watchlist still
+        # yields candidates, so a raw-count guard reads the run as a success.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(
+                tmp,
+                {"last_run": self.OLD, "seen": {}},
+                watchlist=["someone/curated-list"],
+            )
+            self._scan(cfg, self._boom)
+            self.assertEqual(len(self._digest(cfg)["candidates"]), 1)
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_run_that_issued_no_search_holds_the_marker(self):
+        # No error, no search: the shape of a skipped lane, and the dangerous
+        # one — nothing about it reads as a failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(
+                tmp,
+                {"last_run": self.OLD, "seen": {}},
+                watchlist=["someone/curated-list"],
+            )
+            self._scan(cfg, self._ok, queries=[])
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_total_failure_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            self._scan(cfg, self._boom)
+            self.assertEqual(self._marker(state_file), self.OLD)
+
+    def test_successful_empty_scan_still_advances(self):
+        # The guard against over-correcting: a marker that never moves re-scans
+        # a widening window forever. A search that came back matching nothing is
+        # a covered window and must advance.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            self._scan(cfg, self._ok)
+            self.assertNotEqual(self._marker(state_file), self.OLD)
+
+    def test_missing_placements_file_does_not_hold_the_marker(self):
+        # The dedup registry is not a coverage source. Holding on it would
+        # freeze the marker permanently the moment placements.json went missing,
+        # for no coverage gain at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(
+                tmp,
+                {"last_run": self.OLD, "seen": {}},
+                placements_path=str(Path(tmp) / "nope.json"),
+            )
+            self._scan(cfg, self._ok)
+            self.assertNotEqual(self._marker(state_file), self.OLD)
+            # The problem is still reported, just not treated as lost coverage.
+            self.assertTrue(
+                any("placements_path" in e for e in self._digest(cfg)["errors"]),
+                "a missing dedup registry must still reach the digest",
+            )
+
+    def test_malformed_watchlist_entry_does_not_hold_the_marker(self):
+        # Same reasoning: the watchlist is untimed, so a bad entry costs no
+        # window. It stays a reported problem, not a permanent marker freeze.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(
+                tmp, {"last_run": self.OLD, "seen": {}}, watchlist=["not-owner-slash"]
+            )
+            self._scan(cfg, self._ok)
+            self.assertNotEqual(self._marker(state_file), self.OLD)
+            self.assertTrue(any("owner/name" in e for e in self._digest(cfg)["errors"]))
+
+    def test_failed_run_with_no_prior_marker_invents_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(
+                tmp, {"seen": {}}, watchlist=["someone/curated-list"]
+            )
+            self._scan(cfg, self._boom)
+            self.assertFalse(self._marker(state_file))
+
+    def test_first_clean_run_with_no_prior_marker_lays_one_down(self):
+        # The other direction of the same rule: absent is not unreadable.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(tmp, {"seen": {}})
+            self._scan(cfg, self._ok)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(
+                self._marker(state_file)
+            )
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_narrow_days_override_does_not_swallow_the_uncovered_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+            cfg, state_file = self._setup(tmp, {"last_run": old, "seen": {}})
+            self._scan(cfg, self._ok, days=2)
+            self.assertEqual(self._marker(state_file), old)
+
+    def test_wide_days_override_covers_the_marker_and_advances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+            cfg, state_file = self._setup(tmp, {"last_run": old, "seen": {}})
+            self._scan(cfg, self._ok, days=30)
+            self.assertNotEqual(self._marker(state_file), old)
+
+    def test_unreadable_marker_warns_and_re_windows_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _state_file = self._setup(
+                tmp, {"last_run": "last tuesday", "seen": {}}
+            )
+            err = self._scan(cfg, self._ok)
+            self.assertIn("unreadable last_run", err)
+            floor = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+                "%Y-%m-%d"
+            )
+            self.assertEqual(self._digest(cfg)["pushed_since"], floor)
+
+    def test_unreadable_marker_is_not_overwritten_by_an_unearned_stamp(self):
+        # The re-windowed run cannot show it reached back to whatever the rotted
+        # marker meant, so stamping `now` would bury the gap in front of the
+        # default window AND destroy the evidence that the marker had rotted.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, state_file = self._setup(tmp, {"last_run": "last tuesday", "seen": {}})
+            self._scan(cfg, self._ok)
+            self.assertEqual(self._marker(state_file), "last tuesday")
+
+    def test_held_window_is_reported_in_the_digest_and_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            err = self._scan(cfg, self._boom)
+            self.assertTrue(self._digest(cfg)["window_held"])
+            self.assertIn("keeping last_run", err)
+
+    def test_clean_run_is_not_flagged_as_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            self._scan(cfg, self._ok)
+            self.assertFalse(self._digest(cfg)["window_held"])
+
+    def test_held_window_is_re_covered_by_the_next_run(self):
+        # The consequence that matters: whatever was pushed during the failed
+        # run is still inside the window the next run asks for.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, _state_file = self._setup(tmp, {"last_run": self.OLD, "seen": {}})
+            self._scan(cfg, self._boom)
+            self._scan(cfg, self._ok)
+            self.assertEqual(self._digest(cfg)["pushed_since"], self.OLD[:10])
 
 
 class GateInvariantTests(unittest.TestCase):

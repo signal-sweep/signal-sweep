@@ -91,7 +91,7 @@ Every forum and aggregator response this tool fetches is **untrusted external co
 
 ```bash
 cp config.example.json config.json               # edit for your project
-python forum_sweep.py scan --dry-run --days 7     # preview, state untouched
+python forum_sweep.py scan --dry-run --days 7     # preview, writes nothing at all
 python forum_sweep.py scan --source lobsters      # one lane (most reliably open)
 python forum_sweep.py scan                        # all enabled lanes, real run
 python forum_sweep.py density                     # recent posting counts
@@ -119,7 +119,13 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 | `request_delay_seconds` | polite sleep between HTTP requests (the 429 throttle; `0` disables) | `0.5` |
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
 
-State lives in `state/forum_sweep_state.json` (last_run + seen) and `state/forum_sweep_log.jsonl` (the posted ledger). Both are gitignored: the ledger is your posting history; never commit it.
+State lives in `state/forum_sweep_state.json` (a per-source last_run map + seen) and `state/forum_sweep_log.jsonl` (the posted ledger). Both are gitignored: the ledger is your posting history; never commit it.
+
+Each source carries its own `last_run`, so `--source hn` advances only the HN window — the three lanes that did not run keep theirs and lose nothing published in the gap. A state file from an older version with one shared `last_run` is migrated on the next scan by seeding every source with that value.
+
+A lane earns a new `last_run` only by completing a fetch cleanly, because being asked to scan is not proof the scan happened. A request that came back holding nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a request that failed, an adapter that crashed, or a lane that never made a request at all because the source is off or has no instances or tags configured. The next run then re-covers that stretch instead of stepping over it. Partial failure counts as failure. If one Discourse instance 503s while the others answer, the whole lane holds, and the seen-store keeps the already-surfaced threads out of the re-scan. Held lanes are named on stderr and in the digest's `sources_held`.
+
+Two things stop a clean run from advancing the marker, and it is the same reason twice. The window started after the marker, so a stretch in front of it went unread. `--days 3` against a 30-day-old marker leaves 27 uncovered days, and stamping `now` would swallow them silently, so the old marker stands and the next default run picks the gap back up. A marker that no longer parses does the same damage from the other end. The lane falls back to the default window with no way to tell whether that reaches far enough back, so the unreadable stamp is kept and the `WARN unreadable last_run` line repeats every run until you fix or clear it.
 
 ## Driving it with an agent
 
