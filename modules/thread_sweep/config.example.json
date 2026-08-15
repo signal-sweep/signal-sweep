@@ -130,6 +130,22 @@
         "which agent tasks should be a loop"
       ]
     },
+    "divergent-lens": {
+      "answers_with": "PATTERNS.md #13 — one divergent lens on unfinished thinking, with a held-out sample to measure it",
+      "phrases": [
+        "multi agent debate does it improve the answer",
+        "agent self critique makes the output worse",
+        "how to measure whether a critic agent helps"
+      ]
+    },
+    "delegation-queue": {
+      "answers_with": "PATTERNS.md #14 — delegation is a queue you fill, not work the agent finds",
+      "phrases": [
+        "background agent questions nobody answers",
+        "autonomous project manager agent picks the wrong work",
+        "how to hand a task to a background agent claude"
+      ]
+    },
     "mentions": {
       "answers_with": "respond or correct where the project is being discussed (note: min_stars floor applies to this group too)",
       "phrases": [
