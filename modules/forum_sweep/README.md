@@ -16,7 +16,7 @@ Every module in this repo runs the same five stages, and forum-sweep is no excep
 
 The script owns the first stage and the last. The three in the middle are human. That split is the point.
 
-## The six source lanes
+## The eight source lanes
 
 One adapter per source, all returning the same candidate schema (`url`, `title`, `created`, `source`, `score_or_stars`, `comments`, `snippet`, `pattern`, `lane`). Pick lanes with `--source` (default `all`). Each is configured under `sources` in `config.json`:
 
@@ -59,6 +59,22 @@ Two things to read before enabling: the anonymous IP quota is small (roughly 300
 ```
 
 dev.to comment etiquette parallels the rest of this set: the reply must stand alone, and drive-by link-drops burn the account.
+
+**Medium (opt-in, RSS-by-tag).** Off by default. `GET /feed/tag/<tag>` per configured tag — an RSS 2.0 feed, no auth, no pagination. Windowed locally by `pubDate` and floored through the existing `query_groups` phrases via the same token-overlap check dev.to uses (title, snippet, and category tags all feed the overlap). Tracking query strings on Medium links (`?source=rss...`) are stripped before the URL becomes the candidate/seen-store key.
+
+```json
+"medium": { "enabled": false, "tags": ["ai-agents", "claude", "llm", "agentic-ai"] }
+```
+
+Medium is a **discovery** lane in a stronger sense than every other lane above: a Medium response (comment) is a manual human act on medium.com, and there is no reply API this module could call even if the posting gate allowed it. The value is knowing which posts are pulling the conversation in your patterns — feeding replies on the other lanes and outreach decisions, not a reply on Medium itself.
+
+**Lemmy (opt-in).** Off by default. For each configured instance, each query phrase runs against `GET /api/v3/search?q=<phrase>&type_=Posts&sort=New`, floored by `min_score`. Windowed locally by `published`. The candidate URL is the post's local permalink on the instance you queried (`https://<instance>/post/<id>`), not the post's external submitted link and not `ap_id` — a federated post's `ap_id` points at its origin instance, which is often not the instance you configured; `ap_id` still rides along on the candidate since it's cheap to carry.
+
+```json
+"lemmy": { "enabled": false, "instances": ["programming.dev"], "min_score": 2 }
+```
+
+Lemmy is a small, federated network: an unreachable or slow instance degrades gracefully like every other multi-instance lane here, a held window for that instance next run rather than a failed scan.
 
 Filters run before anything reaches you: a per-source cap so one busy instance can't flood the digest, everything previously surfaced excluded (seen-store), everything previously *answered* excluded forever (ledger). The time window scales input to what is new since the last run.
 
@@ -105,6 +121,14 @@ Two facts, both load-bearing. First, the anonymous IP quota this lane uses is sm
 
 dev.to carries no unusual structural gate (no invite wall, no domain-level enforcement, no shadowban risk), but the module's universal rule still applies in full: the reply must stand alone, and drive-by link-drops burn the account just as fast as anywhere else. Treat it as a normal, moderate-trust venue, not a free pass because the mechanics are lighter.
 
+### Medium: discovery only, there is no posting path
+
+Medium is different in kind from every venue above: this lane never becomes a `mark-posted` candidate, because there is nothing to post *to*. A Medium response is a comment left by hand on medium.com, and this module has no reply API to call for it even in principle. Treat the digest as pure signal — which posts, and which authors, are already pulling the exact conversation your patterns describe — and let that inform where you post on the *other* lanes, or who's worth reaching out to directly. There is no venue-standing or self-promotion-ratio risk to manage here because there is no posting action here at all.
+
+### Lemmy: federated, per-community norms — read before posting
+
+Lemmy has no single site-wide policy the way Stack Overflow or Lobsters do; it's a federation of independently-run instances and communities, each with its own moderation norms, closer in spirit to the per-subreddit variation on Reddit than to a single Discourse instance. An instance being small or quiet is normal, not a signal the lane is broken — a slow or unreachable instance degrades gracefully (see above) rather than failing the scan. Before posting anywhere Lemmy surfaces, read that specific community's rules and recent threads the way you would a subreddit you don't already know; there is no repo-verified numeric ceiling to cite here the way there is for Lobsters' <25% rule, so err conservative.
+
 The self-reference ratio is the real governor everywhere. Venues differ in their rules; the universal defence is the same: mix genuinely-helpful linkless answers in over time so the account never reads as ~100% self-link. **Record every post** with `mark-posted`. The ledger is what guarantees you never answer the same thread twice (modulo the Reddit-shadowban caveat above), and `density` keeps your recent posting count visible so restraint stays honest.
 
 ## Security note
@@ -122,7 +146,7 @@ python forum_sweep.py density                     # recent posting counts
 python forum_sweep.py mark-posted --url <thread-url> --pattern <slug> --comment-file reply.md
 ```
 
-Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, no third-party deps and no auth for the Discourse / HN / Lobsters lanes.
+Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, `xml.etree.ElementTree` for the Medium RSS lane, no third-party deps and no auth for the Discourse / HN / Lobsters lanes.
 
 ## Config reference
 
@@ -141,6 +165,11 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 | `sources.devto.enabled` | run the opt-in dev.to (Forem) lane | `false` |
 | `sources.devto.tags` | dev.to tags to pull articles from | `[]` |
 | `sources.devto.min_reactions` | drop dev.to articles below this reaction count | `3` |
+| `sources.medium.enabled` | run the opt-in Medium (RSS-by-tag) lane | `false` |
+| `sources.medium.tags` | Medium tags to pull `/feed/tag/<tag>` from | `[]` |
+| `sources.lemmy.enabled` | run the opt-in Lemmy lane | `false` |
+| `sources.lemmy.instances` | Lemmy instance hosts to search | `[]` |
+| `sources.lemmy.min_score` | drop Lemmy posts below this score | `2` |
 | `thresholds.per_source_cap` | max candidates per instance/site per scan | `4` |
 | `thresholds.hn_min_points` | drop HN hits below this point count | `2` |
 | `emit_cap` | recall ceiling on emitted candidates | `100` |

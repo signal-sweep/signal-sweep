@@ -1178,12 +1178,375 @@ class DevToAdapterTests(unittest.TestCase):
         self.assertEqual(results, [])
 
 
+def _medium_item(
+    title="Agent memory patterns",
+    link="https://medium.com/@x/agent-memory-patterns-abc123?source=rss------ai-5",
+    pubdate="Wed, 26 Aug 2026 06:16:01 GMT",
+    creator="Jane Author",
+    categories=("agent-memory", "ai"),
+    description="<p>short teaser. Continue reading on Medium &raquo;</p>",
+    content_encoded=None,
+):
+    """One <item> block, live-shape confirmed 2026-08-26 against
+    https://medium.com/feed/tag/<tag> (title/link/description/category/
+    dc:creator/pubDate present on every live item fetched during build;
+    content:encoded never appeared on a live item in this build, so it stays
+    opt-in here via the parameter, to cover the namespaced-lookup path
+    Medium's own feed schema allows but this build never observed live)."""
+    cats = "".join(f"<category><![CDATA[{c}]]></category>" for c in categories)
+    content_xml = (
+        f"<content:encoded><![CDATA[{content_encoded}]]></content:encoded>"
+        if content_encoded is not None
+        else ""
+    )
+    creator_xml = f"<dc:creator><![CDATA[{creator}]]></dc:creator>" if creator else ""
+    link_xml = f"<link>{link}</link>" if link else ""
+    return (
+        f"<item><title><![CDATA[{title}]]></title>"
+        f"<description><![CDATA[{description}]]></description>"
+        f"{content_xml}{link_xml}{cats}{creator_xml}"
+        f"<pubDate>{pubdate}</pubDate></item>"
+    )
+
+
+def _medium_feed(*items):
+    """Wraps item blocks in the RSS 2.0 envelope confirmed live 2026-08-26:
+    <rss> declares dc/content/atom/cc namespaces; <channel>/<item> are
+    unprefixed default-namespace elements."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:content="http://purl.org/rss/1.0/modules/content/" '
+        'xmlns:atom="http://www.w3.org/2005/Atom" version="2.0" '
+        'xmlns:cc="http://cyber.law.harvard.edu/rss/creativeCommonsRssModule.html">'
+        f"<channel><title>Test feed</title>{''.join(items)}</channel></rss>"
+    )
+
+
+class MediumAdapterTests(unittest.TestCase):
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _cfg(self, tags=("ai-agents",), enabled=True, query_groups=None):
+        return {
+            "sources": {"medium": {"enabled": enabled, "tags": list(tags)}},
+            "query_groups": query_groups or {"memory": ["agent memory"]},
+        }
+
+    def _serve(self, feed):
+        return lambda url, **kwargs: (200, feed, None)
+
+    def test_disabled_by_default_makes_no_call(self):
+        cfg = self._cfg(enabled=False)
+        with mock.patch.object(fs, "http_get") as mocked:
+            results = fs.medium_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_no_tags_configured_makes_no_call(self):
+        cfg = self._cfg(tags=())
+        with mock.patch.object(fs, "http_get") as mocked:
+            results = fs.medium_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_parses_item_with_shared_candidate_schema(self):
+        feed = _medium_feed(_medium_item())
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(len(results), 1)
+        cand = results[0]
+        self.assertEqual(cand["source"], "medium.com")
+        self.assertEqual(cand["lane"], "medium")
+        self.assertEqual(cand["pattern"], "memory")
+        self.assertTrue(cand["created"].startswith("2026-08-26"), cand["created"])
+
+    def test_tracking_query_param_stripped_from_url(self):
+        item = _medium_item(
+            link="https://medium.com/@x/agent-memory-abc?source=rss------ai-5"
+        )
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(item))):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results[0]["url"], "https://medium.com/@x/agent-memory-abc")
+
+    def test_content_encoded_preferred_over_description_and_creator_prefixed(self):
+        # content:encoded never appeared on a live item during build (see the
+        # module docstring), but the feed schema allows it and the namespace
+        # lookup must resolve it correctly when a publisher does ship it.
+        item = _medium_item(
+            creator="Jane Author",
+            description="<p>teaser about agent memory, not the real body</p>",
+            content_encoded="<p>The full body about agent memory &amp; design.</p>",
+        )
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(item))):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        snippet = results[0]["snippet"]
+        self.assertTrue(snippet.startswith("Jane Author: "))
+        self.assertIn("full body about agent memory & design", snippet)
+        self.assertNotIn("teaser", snippet)
+        self.assertNotIn("<p>", snippet)
+
+    def test_falls_back_to_description_when_no_content_encoded(self):
+        item = _medium_item(
+            content_encoded=None,
+            description="<p>only a teaser about agent memory here</p>",
+        )
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(item))):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        self.assertIn("teaser about agent memory", results[0]["snippet"])
+
+    def test_window_filters_items_published_before_since(self):
+        old = _medium_item(pubdate="Mon, 01 Jan 2020 00:00:00 GMT")
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(old))):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_token_overlap_floor_drops_unrelated_items(self):
+        unrelated = _medium_item(
+            title="A guide to knitting patterns",
+            description="<p>scarves and sweaters, nothing else</p>",
+            categories=("knitting",),
+        )
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(unrelated))):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_category_tags_contribute_to_the_token_overlap_floor(self):
+        # Title/description alone carry only one overlapping token ("memory");
+        # the category tag supplies the second ("agent") to clear the floor.
+        item = _medium_item(
+            title="Notes from a systems memory talk",
+            description="<p>general notes, nothing else on-topic</p>",
+            categories=("agent-tools",),
+        )
+        with mock.patch.object(fs, "http_get", self._serve(_medium_feed(item))):
+            results = fs.medium_adapter(
+                self._cfg(query_groups={"memory": ["agent memory"]}), self.SINCE, []
+            )
+        self.assertEqual(len(results), 1)
+
+    def test_malformed_item_missing_link_skipped_without_killing_the_lane(self):
+        broken = _medium_item(link=None)
+        good = _medium_item(link="https://medium.com/@x/agent-memory-good")
+        feed = _medium_feed(broken, good)
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["url"], "https://medium.com/@x/agent-memory-good")
+
+    def test_malformed_xml_response_soft_fails_without_raising(self):
+        report = fs.LaneReport()
+        with mock.patch.object(fs, "http_get", self._serve("<<<not xml at all")):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, report)
+        self.assertEqual(results, [])
+        self.assertFalse(report.clean)
+
+    def test_failed_fetch_for_one_tag_does_not_raise(self):
+        with mock.patch.object(
+            fs, "http_get", lambda url, **kwargs: (503, "", "HTTP 503")
+        ):
+            results = fs.medium_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results, [])
+
+
+class Rfc822ToIsoTests(unittest.TestCase):
+    def test_converts_rfc822_to_iso(self):
+        self.assertEqual(
+            fs._rfc822_to_iso("Wed, 26 Aug 2026 06:16:01 GMT"),
+            "2026-08-26T06:16:01+00:00",
+        )
+
+    def test_empty_and_unparseable_are_safe(self):
+        self.assertEqual(fs._rfc822_to_iso(""), "")
+        self.assertEqual(fs._rfc822_to_iso("not a date"), "")
+
+
+class StripQueryTests(unittest.TestCase):
+    def test_removes_tracking_query_string(self):
+        self.assertEqual(
+            fs._strip_query("https://medium.com/@x/post-abc?source=rss------ai-5"),
+            "https://medium.com/@x/post-abc",
+        )
+
+    def test_leaves_a_query_free_url_unchanged(self):
+        self.assertEqual(
+            fs._strip_query("https://medium.com/@x/post-abc"),
+            "https://medium.com/@x/post-abc",
+        )
+
+
+def _lemmy_post(
+    post_id=1,
+    name="Agent memory patterns in production",
+    published="2026-07-20T12:00:00.123456Z",
+    body="See [the writeup](https://example.test/x) for **details**.",
+    score=5,
+    comments=2,
+    ap_id="https://origin.example/post/999",
+    community="selfhosted",
+):
+    """One posts[] entry, live-shape confirmed 2026-08-26 against GET
+    https://programming.dev/api/v3/search?q=...&type_=Posts: top-level
+    post/creator/community/counts, counts.{score,comments}, post.published
+    already ISO-8601 with a literal Z. For a federated post ap_id points at
+    the ORIGIN instance (confirmed live), never the instance being queried."""
+    return {
+        "post": {
+            "id": post_id,
+            "name": name,
+            "url": "https://external.example/article",
+            "body": body,
+            "published": published,
+            "ap_id": ap_id,
+        },
+        "creator": {"name": "someone"},
+        "community": {"name": community},
+        "counts": {"score": score, "comments": comments},
+    }
+
+
+def _lemmy_response(*posts):
+    return json.dumps(
+        {
+            "type_": "Posts",
+            "comments": [],
+            "communities": [],
+            "users": [],
+            "posts": list(posts),
+        }
+    )
+
+
+class LemmyAdapterTests(unittest.TestCase):
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _cfg(self, instances=("lemmy.test",), enabled=True, min_score=0):
+        return {
+            "sources": {
+                "lemmy": {
+                    "enabled": enabled,
+                    "instances": list(instances),
+                    "min_score": min_score,
+                }
+            },
+            "query_groups": {"memory": ["agent memory"]},
+        }
+
+    def test_disabled_by_default_makes_no_call(self):
+        cfg = self._cfg(enabled=False)
+        with mock.patch.object(fs, "http_get") as mocked:
+            results = fs.lemmy_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_no_instances_configured_makes_no_call(self):
+        cfg = self._cfg(instances=())
+        with mock.patch.object(fs, "http_get") as mocked:
+            results = fs.lemmy_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_parses_post_with_shared_candidate_schema_and_local_permalink(self):
+        body = _lemmy_response(_lemmy_post(post_id=42))
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(len(results), 1)
+        cand = results[0]
+        self.assertEqual(cand["url"], "https://lemmy.test/post/42")
+        self.assertEqual(cand["source"], "lemmy.test")
+        self.assertEqual(cand["lane"], "lemmy")
+        self.assertEqual(cand["score_or_stars"], 5)
+        self.assertEqual(cand["comments"], 2)
+        self.assertEqual(cand["ap_id"], "https://origin.example/post/999")
+
+    def test_request_url_uses_type_posts_and_sort_new(self):
+        body = _lemmy_response()
+        captured = []
+
+        def capture(url, **kw):
+            captured.append(url)
+            return 200, body, None
+
+        with mock.patch.object(fs, "http_get", capture):
+            fs.lemmy_adapter(self._cfg(), self.SINCE, [])
+        self.assertIn("type_=Posts", captured[0])
+        self.assertIn("sort=New", captured[0])
+
+    def test_markdown_and_html_stripped_from_snippet(self):
+        post = _lemmy_post(body="See [the writeup](https://x.test) for **details**.")
+        body = _lemmy_response(post)
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, [])
+        snippet = results[0]["snippet"]
+        self.assertIn("the writeup", snippet)
+        self.assertIn("details", snippet)
+        self.assertNotIn("[", snippet)
+        self.assertNotIn("**", snippet)
+
+    def test_min_score_floor_drops_low_score_posts(self):
+        body = _lemmy_response(
+            _lemmy_post(post_id=1, score=1), _lemmy_post(post_id=2, score=5)
+        )
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(min_score=2), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["url"].endswith("/post/2"))
+
+    def test_window_filters_posts_published_before_since(self):
+        old = _lemmy_post(published="2020-01-01T00:00:00.000000Z")
+        body = _lemmy_response(old)
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_malformed_entries_skipped_without_killing_the_lane(self):
+        body = json.dumps(
+            {
+                "posts": [
+                    "not-a-dict",
+                    {"post": "not-a-dict-either"},
+                    {"post": {"name": "missing id"}},
+                    _lemmy_post(post_id=9),
+                ]
+            }
+        )
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["url"].endswith("/post/9"))
+
+    def test_non_list_posts_payload_yields_no_candidates(self):
+        body = json.dumps({"posts": "not-a-list"})
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, body, None)):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_failed_fetch_for_one_instance_does_not_raise(self):
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (503, "", "HTTP 503")):
+            results = fs.lemmy_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results, [])
+
+
+class StripMarkdownTests(unittest.TestCase):
+    def test_strips_links_and_common_markup(self):
+        raw = "**Bold** and _italic_ and `code` and [a link](https://x.test)."
+        cleaned = fs._strip_markdown(raw)
+        self.assertNotIn("[", cleaned)
+        self.assertNotIn("*", cleaned)
+        self.assertNotIn("_", cleaned)
+        self.assertNotIn("`", cleaned)
+        self.assertIn("a link", cleaned)
+
+    def test_none_and_empty_are_safe(self):
+        self.assertEqual(fs._strip_markdown(""), "")
+        self.assertEqual(fs._strip_markdown(None), "")
+
+
 class NewSourceEarnedStampTests(ScanHarness, unittest.TestCase):
     """The PR #21 earned-marker rule, plus the shared seen-store/per-source-cap
-    pipeline, proven end-to-end for the two new sources through cmd_scan with
+    pipeline, proven end-to-end for four newer sources through cmd_scan with
     only the HTTP layer faked -- the same shape as FetchAccountingTests uses
-    for discourse, extended to stackexchange/devto so the SOURCES/ADAPTERS
-    wiring is proven, not just each adapter's own parsing."""
+    for discourse, extended to stackexchange/devto/medium/lemmy so the
+    SOURCES/ADAPTERS wiring is proven, not just each adapter's own parsing."""
 
     def _se_body(self, question_id=901, score=5):
         now_epoch = int(datetime.now(timezone.utc).timestamp())
@@ -1400,6 +1763,172 @@ class NewSourceEarnedStampTests(ScanHarness, unittest.TestCase):
             payload = json.loads(cand_path.read_text())
             # default per_source_cap (DEFAULTS) is 4; one phrase * one site ->
             # a single request returning 10 items, capped to 4 kept.
+            self.assertEqual(len(payload["candidates"]), 4)
+            self.assertEqual(payload["dropped"]["source_cap"], 6)
+
+    def _medium_body(self, link_suffix="agent-memory-1"):
+        return _medium_feed(
+            _medium_item(
+                link=f"https://medium.com/@x/{link_suffix}",
+                pubdate=datetime.now(timezone.utc).strftime(
+                    "%a, %d %b %Y %H:%M:%S GMT"
+                ),
+            )
+        )
+
+    def _lemmy_body(self, post_id=901, score=5):
+        return _lemmy_response(
+            _lemmy_post(
+                post_id=post_id,
+                score=score,
+                published=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        )
+
+    def test_medium_disabled_holds_and_makes_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fs, "http_get") as mocked_http:
+                _cfg_path, state_file = self._run(
+                    tmp, "medium", {"medium": {"tags": ["ai"]}}, mocked_http
+                )
+            mocked_http.assert_not_called()
+            self.assertNotIn("medium", self._marks(state_file))
+
+    def test_medium_clean_fetch_earns_a_fresh_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._medium_body()
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            _cfg_path, state_file = self._run(
+                tmp, "medium", {"medium": {"enabled": True, "tags": ["ai"]}}, ok
+            )
+            marks = self._marks(state_file)
+            self.assertIn("medium", marks)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(marks["medium"])
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_medium_failed_fetch_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def failing(url, **kwargs):
+                return 503, "", "HTTP 503"
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "medium",
+                {"medium": {"enabled": True, "tags": ["ai"]}},
+                failing,
+                extra_last_run={"medium": "2026-07-07T00:00:00+00:00"},
+            )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["medium"], "2026-07-07T00:00:00+00:00")
+
+    def test_lemmy_disabled_holds_and_makes_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fs, "http_get") as mocked_http:
+                _cfg_path, state_file = self._run(
+                    tmp,
+                    "lemmy",
+                    {"lemmy": {"instances": ["lemmy.test"]}},
+                    mocked_http,
+                )
+            mocked_http.assert_not_called()
+            self.assertNotIn("lemmy", self._marks(state_file))
+
+    def test_lemmy_clean_fetch_earns_a_fresh_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._lemmy_body()
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "lemmy",
+                {"lemmy": {"enabled": True, "instances": ["lemmy.test"]}},
+                ok,
+            )
+            marks = self._marks(state_file)
+            self.assertIn("lemmy", marks)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(marks["lemmy"])
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_lemmy_failed_fetch_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def failing(url, **kwargs):
+                return 503, "", "HTTP 503"
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "lemmy",
+                {"lemmy": {"enabled": True, "instances": ["lemmy.test"]}},
+                failing,
+                extra_last_run={"lemmy": "2026-07-08T00:00:00+00:00"},
+            )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["lemmy"], "2026-07-08T00:00:00+00:00")
+
+    def test_seen_store_dedups_lemmy_candidates_across_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # published is rebuilt fresh (full microsecond precision) on every
+            # actual fetch, not captured once and reused -- lemmy windows
+            # locally, so scan 2's window starts at scan 1's earned "now"
+            # stamp, and a published value frozen before that moment would be
+            # windowed out rather than reaching the seen-store check this
+            # test means to exercise. Same fix FetchAccountingTests._payload
+            # already uses for discourse. The post_id (-> URL) stays fixed
+            # across both fetches, which is what the seen-store dedups on.
+            def ok(url, **kwargs):
+                return 200, self._lemmy_body(post_id=777), None
+
+            cfg_path, _state_file = self._run(
+                tmp,
+                "lemmy",
+                {"lemmy": {"enabled": True, "instances": ["lemmy.test"]}},
+                ok,
+            )
+            cand_path = Path(json.loads(cfg_path.read_text())["candidates_file"])
+            first = json.loads(cand_path.read_text())
+            self.assertEqual(len(first["candidates"]), 1)
+
+            args = argparse.Namespace(
+                config=str(cfg_path),
+                source="lemmy",
+                days=None,
+                limit=None,
+                dry_run=False,
+            )
+            with mock.patch.object(fs, "http_get", ok):
+                fs.cmd_scan(args)
+            second = json.loads(cand_path.read_text())
+            self.assertEqual(len(second["candidates"]), 0)
+            self.assertEqual(second["dropped"]["seen"], 1)
+
+    def test_per_source_cap_applies_to_a_lemmy_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            posts = [
+                _lemmy_post(post_id=2000 + n, score=n, published=now_iso)
+                for n in range(10)
+            ]
+            body = _lemmy_response(*posts)
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            cfg_path, _state_file = self._run(
+                tmp,
+                "lemmy",
+                {"lemmy": {"enabled": True, "instances": ["lemmy.test"]}},
+                ok,
+            )
+            cand_path = Path(json.loads(cfg_path.read_text())["candidates_file"])
+            payload = json.loads(cand_path.read_text())
+            # default per_source_cap (DEFAULTS) is 4; one phrase * one
+            # instance -> a single request returning 10 posts, capped to 4.
             self.assertEqual(len(payload["candidates"]), 4)
             self.assertEqual(payload["dropped"]["source_cap"], 6)
 
