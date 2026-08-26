@@ -4,33 +4,45 @@
 A teardown here means a respectful written analysis of someone's PUBLISHED,
 credited work: what's good about the design, what it trades off, what you
 would do differently. This module does the deterministic discovery half
-only - it never writes the teardown itself. Two lanes:
-  lane 1 (gh search):  repos matching architecture-shaped search phrases or
-                        topics, scored on README/docs richness
-  lane 2 (HN Algolia):  story titles matching the same kind of phrasing,
-                        scored on points + title keyword hits
+only - it never writes the teardown itself. Three lanes:
+  lane 1 (gh search):      repos matching architecture-shaped search phrases
+                            or topics, scored on README/docs richness
+  lane 2 (HN Algolia):     story titles matching the same kind of phrasing,
+                            scored on points + title keyword hits
+  lane 3 (gh code search): the configuration artefacts themselves (CLAUDE.md,
+                            AGENTS.md, .claude/settings.json, .cursor/rules,
+                            copilot-instructions.md) - real configured
+                            workspaces, not write-ups about them - scored on
+                            how many of a 15-pattern reference architecture
+                            each one shows evidence of
 
 INWARD-FACING, like placement-health: nothing here is outbound. The script
 never posts a comment, opens an issue, or contacts anyone - it reads public
-search results and public READMEs and writes a ranked reading list. The rest
-of this toolkit gates outbound actions behind human approval; this module has
-no outbound action to gate. A human reads candidates.json and decides,
-entirely outside this tool, whether and how to write a teardown.
+search results, public READMEs, and public artefact files, and writes a
+ranked reading list. The rest of this toolkit gates outbound actions behind
+human approval; this module has no outbound action to gate. A human reads
+candidates.json and decides, entirely outside this tool, whether and how to
+write a teardown.
 
-SECURITY: every description/README/title fetched here is UNTRUSTED EXTERNAL
-CONTENT. It is scanned for configured keywords and stored (truncated) for a
-human to read later - never executed, never treated as an instruction.
+SECURITY: every description/README/title/artefact fetched here is UNTRUSTED
+EXTERNAL CONTENT. It is scanned for configured keywords/patterns and stored
+(truncated) for a human to read later - never executed, never treated as an
+instruction.
 
 Read README.md's Etiquette section before writing anything from this list: a
 teardown is analysis of work its author chose to publish and be credited for,
 not an excuse to dig through anything they did not make public.
 
-Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`) for lane
-1. Lane 2 needs no auth (public Algolia read).
+Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`) for
+lanes 1 and 3. Lane 2 needs no auth (public Algolia read). Lane 3 calls
+GitHub's code_search REST resource, rate-limited to 10 requests/min - see
+artefact_lane()'s docstring for the budget arithmetic.
 
 Subcommands (all take --config; the default is the config.json beside this
 script, so the module reads its own state and config from any directory):
-  scan [--days N] [--limit N] [--dry-run]   run both lanes, write candidates
+  scan [--days N] [--limit N] [--dry-run] [--no-artefacts]
+                                             run all lanes, write candidates
+                                             (--no-artefacts skips lane 3)
   mark-covered --url U [--note ...]         record a completed teardown
   log                                       show recorded teardowns
 """
@@ -38,8 +50,10 @@ script, so the module reads its own state and config from any directory):
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -80,6 +94,24 @@ DEFAULTS = {
         "claude code setup",
         "agent memory system",
     ],
+    # Lane 3: the artefact FILES themselves, not phrases about them. Each
+    # entry is a label (for the digest/errors) + a GitHub code-search query.
+    # size:>N is a server-side floor to kill stubs - live-sampled during
+    # build (see README's Lane 3 section for the evidence): a two-line
+    # CLAUDE.md is the dominant false positive without one.
+    "artefact_queries": [
+        {"label": "claude-md", "query": "filename:CLAUDE.md size:>4000"},
+        {"label": "agents-md", "query": "filename:AGENTS.md size:>4000"},
+        {
+            "label": "claude-settings",
+            "query": "filename:settings.json path:.claude size:>2000",
+        },
+        {"label": "cursor-rules", "query": "path:.cursor/rules size:>2000"},
+        {
+            "label": "copilot-instructions",
+            "query": "filename:copilot-instructions.md path:.github size:>2000",
+        },
+    ],
     "richness_keywords": [
         "memory",
         "context",
@@ -92,9 +124,77 @@ DEFAULTS = {
         "retrieval",
         "guardrail",
     ],
+    # Lane 3 pattern-density map: one label per numbered pattern of the
+    # reference architecture, each a short list of lowercase indicator
+    # phrases scanned against fetched artefact text. See
+    # score_artefact_patterns / score_pattern_density for how this drives
+    # the ranking.
+    "pattern_signals": {
+        "p01": ["roles/", "persona", "subagent", "role composition", "sub-agent"],
+        "p02": [
+            "classify-then-act",
+            "classify then act",
+            "triage queue",
+            "classify and act",
+        ],
+        "p03": [
+            "dead man's switch",
+            "sentinel",
+            "freshness check",
+            "staleness check",
+            "heartbeat monitor",
+        ],
+        "p04": ["tier by impact", "impact tier", "severity tier", "tiered by impact"],
+        "p05": ["memory index", "memory pointer", "memory.md", "pointer file"],
+        "p06": [
+            "bitwarden",
+            "1password",
+            "credentials never",
+            "secrets vault",
+            "never in files",
+        ],
+        "p07": [
+            "pretooluse",
+            "pre-tooluse",
+            "blocklist guard",
+            "hook guard",
+            "deny list",
+        ],
+        "p08": ["audit cadence", "weekly audit", "audit ledger", "periodic audit"],
+        "p09": [
+            "context budget",
+            "compaction",
+            "context window budget",
+            "token budget",
+        ],
+        "p10": ["lessons.md", "self-edit", "gated edit", "lessons learned file"],
+        "p11": [
+            "scaffold register",
+            "falsifiable hypothesis",
+            "scaffold hypothesis",
+            "register the scaffold",
+        ],
+        "p12": [
+            "recurring vs on-demand",
+            "loop selection",
+            "on-demand loop",
+            "interval-triggered loop",
+        ],
+        "p13": ["red-team", "divergent lens", "adversarial critic", "devil's advocate"],
+        "p14": ["task board", "delegation queue", "kanban board", "agent queue"],
+        "p15": ["model tiering", "cost routing", "tiered model", "tier by cost"],
+    },
     "min_stars": 50,
+    # Lane 3's own (lower) star floor: practitioner workspaces run smaller
+    # than the frameworks lane 1 targets, so lane 1's min_stars would starve
+    # this lane if reused directly.
+    "artefact_min_stars": 20,
     "active_within_days": 365,
     "hn_min_points": 10,
+    # Pages fetched per artefact_queries entry (per_page is fixed at
+    # ARTEFACT_PER_PAGE). The 10-requests/min code_search budget is the
+    # constraint on raising this - see artefact_lane()'s docstring.
+    "artefact_pages_per_query": 1,
     "per_query": 20,
     "emit_cap": 60,
     "seen_retention_days": 180,
@@ -105,6 +205,16 @@ DEFAULTS = {
 
 UA = "teardown-sweep (https://github.com/signal-sweep/signal-sweep)"
 HN_TIMEOUT = 15
+
+# Lane 3 (artefact code search) budget. code_search is rate-limited to 10
+# requests/min (live-verified: `gh api rate_limit` -> resources.code_search.
+# limit == 10). ARTEFACT_PER_PAGE is fixed rather than configurable - the
+# constraint is the request COUNT, not the page size. Calls per scan =
+# len(artefact_queries) * artefact_pages_per_query; the shipped defaults (5
+# queries * 1 page = 5 calls) at ARTEFACT_SLEEP_SECONDS apart spend ~24s and
+# stay comfortably inside one rolling 60s window.
+ARTEFACT_PER_PAGE = 30
+ARTEFACT_SLEEP_SECONDS = 6.0
 
 
 def load_config(path):
@@ -126,9 +236,19 @@ def load_config(path):
         sys.exit("config 'own_repos' must be a list of owner/name repos to exclude")
     for key, val in DEFAULTS.items():
         cfg.setdefault(key, val)
-    for key in ("search_queries", "topics", "hn_queries", "richness_keywords"):
+    for key in (
+        "search_queries",
+        "topics",
+        "hn_queries",
+        "richness_keywords",
+        "artefact_queries",
+    ):
         if not isinstance(cfg[key], list):
             sys.exit(f"config {key!r} must be a list")
+    if not isinstance(cfg["pattern_signals"], dict):
+        sys.exit(
+            "config 'pattern_signals' must be an object of label -> indicator list"
+        )
     return cfg
 
 
@@ -159,6 +279,21 @@ def is_own_repo(repo, own_repos):
     return any(repo_l == str(own).lower() for own in own_repos)
 
 
+def _dedup_key(cand):
+    """The identity a candidate is deduped/seen/covered under: repo
+    (lowercased) for both github-flavoured lanes (1: frameworks, 3:
+    artefacts - both about a REPO's own qualities), the story/post URL for
+    HN (lane 2, about one specific piece of writing). Lane-3 candidates are
+    deliberately keyed at repo granularity even though one repo can surface
+    more than one matching artefact in a run - a digest does not need the
+    same practitioner workspace twice just because it has both a CLAUDE.md
+    and a .cursor/rules hit; the first match wins, exactly like a repo hit by
+    both a phrase and a topic query in lane 1."""
+    if cand["lane"] == "hn":
+        return cand["url"]
+    return cand["repo"].lower()
+
+
 # --- lane 1: github repos ------------------------------------------------
 
 
@@ -184,6 +319,18 @@ def search_repos(query, limit, extra_args, errors):
     return data
 
 
+def _decode_b64_content(content):
+    """Shared base64-decode for a GitHub contents-API payload's `content`
+    field (GitHub line-wraps it; b64decode's default validate=False discards
+    the embedded newlines before decoding, so no stripping needed). Empty
+    string on malformed input rather than raising - used by both the README
+    fetch below and the lane-3 artefact fetch, which degrade the same way."""
+    try:
+        return base64.b64decode(content).decode("utf-8", errors="replace")
+    except binascii.Error:
+        return ""
+
+
 def fetch_readme_text(full_name):
     """Best-effort repo README fetch via `gh api` (base64 body). Empty string
     on any failure (missing README, renamed/private repo, API hiccup) - the
@@ -196,12 +343,7 @@ def fetch_readme_text(full_name):
     content = data.get("content", "")
     if not content:
         return ""
-    try:
-        # GitHub line-wraps the base64 body; b64decode's default validate=False
-        # discards the embedded newlines before decoding, so no stripping needed.
-        return base64.b64decode(content).decode("utf-8", errors="replace")
-    except binascii.Error:
-        return ""
+    return _decode_b64_content(content)
 
 
 def has_docs_dir(full_name):
@@ -457,6 +599,279 @@ def hn_lane(cfg, since_epoch, report):
     return results
 
 
+# --- lane 3: artefact code search ------------------------------------------
+#
+# Lanes 1 and 2 find frameworks and write-ups. Lane 3 finds real configured
+# agent workspaces by searching for the configuration artefacts themselves
+# (CLAUDE.md, AGENTS.md, .claude/settings.json, .cursor/rules,
+# copilot-instructions.md) via GitHub's REST code_search resource.
+
+
+def content_prefix_hash(text):
+    """sha1 of the first ~2KB of artefact text with whitespace runs
+    collapsed, so two copies of the same template that differ only past that
+    prefix, or only in incidental whitespace, still hash identically. This is
+    near-duplicate detection for template floods, not exact-duplicate
+    detection."""
+    prefix = (text or "")[:2048]
+    normalized = " ".join(prefix.split())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+# score_pattern_density's shape: peaks over PATTERN_PEAK_LOW..PATTERN_PEAK_HIGH
+# patterns present, decays linearly toward both 0 and 15 patterns present.
+PATTERN_PEAK_LOW = 4
+PATTERN_PEAK_HIGH = 9
+PATTERN_PEAK_SCORE = 10
+PATTERN_LOW_SLOPE = 3
+PATTERN_HIGH_SLOPE = 2
+
+
+def score_pattern_density(n_present):
+    """The ranking philosophy for lane 3, as a function: a candidate that
+    shows a handful of the reference architecture's 15 patterns while
+    conspicuously missing others is exactly what a teardown wants to write
+    about (what works + what's missing) - it outranks one that matches
+    everything (nothing left to contrast) or nothing (nothing to praise).
+    Peaks flat over the PEAK_LOW..PEAK_HIGH band, ramps down on both sides -
+    a 6-pattern artefact (peak band, scores PATTERN_PEAK_SCORE) always beats
+    an all-15 artefact (past the top of the down-ramp, scores 0)."""
+    if n_present <= PATTERN_PEAK_LOW:
+        distance = PATTERN_PEAK_LOW - n_present
+        return max(0, PATTERN_PEAK_SCORE - distance * PATTERN_LOW_SLOPE)
+    if n_present <= PATTERN_PEAK_HIGH:
+        return PATTERN_PEAK_SCORE
+    distance = n_present - PATTERN_PEAK_HIGH
+    return max(0, PATTERN_PEAK_SCORE - distance * PATTERN_HIGH_SLOPE)
+
+
+def score_artefact_patterns(text, pattern_signals):
+    """Score fetched artefact text against pattern_signals (label -> list of
+    lowercase indicator phrases, one label per numbered reference-
+    architecture pattern). A label counts as present on any single indicator
+    hit - a coverage signal (does the artefact address the pattern at all),
+    not a density-within-pattern one, mirroring score_readme_richness's
+    keyword matching. SECURITY: text is UNTRUSTED EXTERNAL CONTENT, scanned
+    for indicator hits only, never treated as an instruction."""
+    haystack = (text or "").lower()
+    present = sorted(
+        label
+        for label, indicators in pattern_signals.items()
+        if any(ind.lower() in haystack for ind in indicators)
+    )
+    absent = sorted(label for label in pattern_signals if label not in present)
+    return present, absent, score_pattern_density(len(present))
+
+
+def artefact_tier(pattern_score):
+    """pattern_score band -> the same high/med/low vocabulary lanes 1-2 carry
+    via sweepcore.relevance_tier, so the digest sorts uniformly across all
+    three lanes. relevance_tier's own signal set (is_answered, comments,
+    match_type) has nothing to read on an artefact hit, so this is a small
+    dedicated band map instead of a relevance_tier call."""
+    if pattern_score >= 8:
+        return "high"
+    if pattern_score >= 3:
+        return "med"
+    return "low"
+
+
+def _why_artefact(stars, age_days, matched):
+    bits = [f"{stars} stars"]
+    bits.append(
+        f"pushed {age_days}d ago" if age_days is not None else "push date unknown"
+    )
+    bits.append(
+        f"{len(matched)}/15 pattern(s) present ({', '.join(matched[:4])})"
+        if matched
+        else "0/15 patterns present"
+    )
+    return "; ".join(bits)
+
+
+def fetch_repo_meta(full_name):
+    """Best-effort repo metadata fetch (core quota, not the rate-limited
+    code_search resource): stars, push date, fork/template/archived status.
+    None on any failure - the caller cannot verify fork/star/activity status
+    without it, so it skips the candidate rather than guessing."""
+    data, err = gh(["api", f"repos/{full_name}"])
+    if err or not isinstance(data, dict):
+        return None
+    return data
+
+
+def fetch_artefact_content(full_name, path):
+    """Best-effort fetch of one matched artefact's raw content (core quota,
+    `gh api repos/{full}/contents/{path}`, base64 body) - used for both the
+    pattern-density score and the near-duplicate content hash. Empty string
+    on any failure (renamed file, repo gone private, API hiccup); the
+    candidate still builds, it just scores zero patterns, the same degrade
+    shape as fetch_readme_text."""
+    data, err = gh(["api", f"repos/{full_name}/contents/{quote(path, safe='/')}"])
+    if err or not isinstance(data, dict):
+        return ""
+    content = data.get("content", "")
+    if not content:
+        return ""
+    return _decode_b64_content(content)
+
+
+def search_code_page(query, page, per_page):
+    """One page of REST code search: `gh api search/code?q=...`. Returns
+    (items, err), mirroring gh() itself - fail-soft, an unusable payload
+    becomes ([], a description) rather than a raise. The code_search
+    resource is rate-limited to 10 requests/min (live-verified via `gh api
+    rate_limit` -> resources.code_search.limit); a 403 here is that limit,
+    not an auth failure - gh() already exits fatally on the 401-shaped auth
+    markers before ever returning one."""
+    url = f"search/code?q={quote(query)}&page={page}&per_page={per_page}"
+    data, err = gh(["api", url])
+    if err:
+        return [], err
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return [], "no usable result payload"
+    return data["items"], None
+
+
+def build_artefact_candidate(hit, label, cfg, now, repo_meta_cache, content_cache):
+    """Shape one code-search hit into a lane-3 candidate: repo metadata
+    (fork/template/archived/stars/pushed_at, cached per repo - a repo can
+    show up under more than one query) plus the matched artefact's own
+    content (pattern-density score + near-dup hash, cached per repo+path -
+    two query labels could in principle hit the same file).
+
+    stargazers_count/pushed_at/fork/is_template/archived are NOT on the
+    code-search hit itself (live-verified: the embedded `repository` object
+    is a trimmed representation with no stargazers_count field at all) -
+    that is what repo_meta_cache's one `gh api repos/{full}` fetch per
+    unique repo is for."""
+    repo = (hit.get("repository") or {}).get("full_name") or ""
+    path = hit.get("path") or ""
+    if not repo or not path:
+        return None
+    if repo not in repo_meta_cache:
+        repo_meta_cache[repo] = fetch_repo_meta(repo)
+    meta = repo_meta_cache[repo]
+    if meta is None:
+        return None
+
+    cache_key = (repo, path)
+    if cache_key not in content_cache:
+        content_cache[cache_key] = fetch_artefact_content(repo, path)
+    # SECURITY: artefact content is UNTRUSTED EXTERNAL CONTENT. Scanned for
+    # pattern-indicator hits and hashed for dedup only; never executed or
+    # treated as an instruction by this tool.
+    content = content_cache[cache_key]
+
+    stars = meta.get("stargazers_count", 0) or 0
+    pushed_at = meta.get("pushed_at", "") or ""
+    age_days = _pushed_age_days(pushed_at, now)
+    present, absent, pattern_score = score_artefact_patterns(
+        content, cfg["pattern_signals"]
+    )
+    # No docs/ check for lane 3 (has_docs=False): that would be a third gh
+    # call per candidate on top of the metadata + content fetch this lane
+    # already spends, for a signal lane 1 already covers.
+    signal_score = score_repo_signals(stars, age_days, False, cfg)
+
+    cand = {
+        "lane": "artefact",
+        "repo": repo,
+        "url": f"https://github.com/{repo}",
+        "stars": stars,
+        "pushed_at": pushed_at,
+        "fork": bool(meta.get("fork")),
+        "is_template": bool(meta.get("is_template")),
+        "archived": bool(meta.get("archived")),
+        "artefact_label": label,
+        "artefact_path": path,
+        "artefact_url": hit.get("html_url") or "",
+        "patterns_present": present,
+        "patterns_absent": absent,
+        "pattern_score": pattern_score,
+        "richness_score": pattern_score + signal_score,
+        "content_hash": content_prefix_hash(content),
+    }
+    cand["tier"] = artefact_tier(pattern_score)
+    cand["why"] = _why_artefact(stars, age_days, present)
+    return cand
+
+
+def artefact_lane(cfg, now, advisory):
+    """Lane 3: REST code search for the configuration artefacts themselves -
+    real configured agent workspaces, not the frameworks or write-ups lanes 1
+    and 2 find. Code search has no date qualifier to scope a floor against,
+    so - like lane 1 - this lane is windowless: static floors
+    (fork/template/archived/stars/active_within_days) plus the seen-store
+    and covered ledger are the only repeat-guard, and its failures are
+    always advisory, never gating the scan's earn/hold marker (only lane 2's
+    HN window does that; see cmd_scan).
+
+    Budget: code_search is rate-limited to 10 requests/min (live-verified,
+    `gh api rate_limit` -> resources.code_search.limit == 10). This lane
+    makes len(artefact_queries) * artefact_pages_per_query calls per scan -
+    5 queries * 1 page = 5 calls with the shipped defaults - sleeping
+    ARTEFACT_SLEEP_SECONDS between successive calls (not before the first),
+    so a default run's 5 calls spread across ~24s stay comfortably inside
+    one rolling 60s window. A 403 on this endpoint is that limit, not an
+    auth failure; on one, this lane stops issuing further queries for the
+    rest of THIS run (rather than working through the remaining queries into
+    more 403s) and reports it as advisory - next run tries again from the
+    top."""
+    raw = []
+    repo_meta_cache, content_cache = {}, {}
+    made_a_call = False
+    for entry in cfg["artefact_queries"]:
+        if not isinstance(entry, dict) or not entry.get("query"):
+            continue
+        label = entry.get("label") or entry["query"]
+        query = entry["query"]
+        for page in range(1, cfg["artefact_pages_per_query"] + 1):
+            if made_a_call:
+                time.sleep(ARTEFACT_SLEEP_SECONDS)
+            made_a_call = True
+            items, err = search_code_page(query, page, ARTEFACT_PER_PAGE)
+            if err:
+                advisory.append(f"artefact search {label!r} page {page}: {err}")
+                if "403" in err:
+                    advisory.append(
+                        "artefact lane: code_search rate limit hit - holding "
+                        "the remaining queries for next run"
+                    )
+                    return raw
+                continue
+            for hit in items:
+                cand = build_artefact_candidate(
+                    hit, label, cfg, now, repo_meta_cache, content_cache
+                )
+                if cand:
+                    raw.append(cand)
+    return raw
+
+
+def _artefact_drop_reason(cand, cfg, now, batch_hashes, prior_hashes):
+    """Lane-3-only exclusions beyond the dup/own/seen/covered checks every
+    lane shares: the fork-flood guard (fork/template/archived), this lane's
+    own (lower) star floor, the active_within_days recency floor code search
+    has no query-side equivalent for, and near-duplicate artefact content.
+    None if the candidate clears all of them."""
+    if cand["fork"]:
+        return "fork"
+    if cand["is_template"]:
+        return "template"
+    if cand["archived"]:
+        return "archived"
+    if cand["stars"] < cfg["artefact_min_stars"]:
+        return "stars"
+    age_days = _pushed_age_days(cand["pushed_at"], now)
+    if age_days is not None and age_days > cfg["active_within_days"]:
+        return "stale"
+    content_hash = cand.get("content_hash")
+    if content_hash and (content_hash in batch_hashes or content_hash in prior_hashes):
+        return "dup_content"
+    return None
+
+
 # --- scan --------------------------------------------------------------
 
 
@@ -470,6 +885,13 @@ def cmd_scan(args):
     # every run - not a since-last-run claim, so it carries no marker
     # obligation. See the earn/hold comment further down.
     floor_date = (now - timedelta(days=cfg["active_within_days"])).strftime("%Y-%m-%d")
+    # not args.no_artefacts, not getattr(): a bare mock.Mock() args object (as
+    # every pre-lane-3 test constructs) auto-vivifies no_artefacts as a truthy
+    # child Mock, so this is False for those tests - lane 3 never fires a real
+    # gh call from an old, unmodified test. Real CLI usage defaults the flag
+    # to False via argparse, so `not False` runs lane 3 by default, which is
+    # also the intended end-user behaviour (opt OUT, not opt in).
+    run_artefacts = not args.no_artefacts
 
     if args.dry_run:
         # No network, no gh, no state. Print exactly what we WOULD query.
@@ -488,6 +910,20 @@ def cmd_scan(args):
         print(f"  lane 2 (HN Algolia, tags=story, points>={cfg['hn_min_points']}):")
         for q in cfg["hn_queries"]:
             print(f"    query={q!r} hitsPerPage={cfg['per_query']}")
+        if run_artefacts:
+            n = len(cfg["artefact_queries"])
+            print(
+                f"  lane 3 (gh api search/code, {n} quer{'y' if n == 1 else 'ies'} x "
+                f"{cfg['artefact_pages_per_query']} page(s), star floor "
+                f"{cfg['artefact_min_stars']}):"
+            )
+            for entry in cfg["artefact_queries"]:
+                if not isinstance(entry, dict) or not entry.get("query"):
+                    continue
+                label = entry.get("label") or entry["query"]
+                print(f"    gh api search/code?q=... [{label}] {entry['query']!r}")
+        else:
+            print("  lane 3 (gh api search/code): skipped (--no-artefacts)")
         print(f"  own_repos excluded: {cfg['own_repos'] or '(none configured)'}")
         print(
             "  candidates would be written to: "
@@ -509,35 +945,54 @@ def cmd_scan(args):
     since_epoch = int(since.timestamp())
 
     # Only lane 2 (HN) is windowed against last_run, so only its LaneReport
-    # governs the marker. Lane 1's floor is active_within_days back from NOW
-    # every run, not from last_run - there is no "stretch since last time" for
-    # a gh search error to lose, so lane-1 failures are reported (advisory)
-    # but never hold the marker. This is the mirror image of list_sweep, where
-    # the query lane governs the marker and the watchlist lane is untimed;
-    # here it is the query-shaped HN lane that is windowed and the repo lane
-    # that is not.
+    # governs the marker. Lanes 1 and 3's floors are static (a trailing
+    # window from NOW for lane 1; fork/template/archived/stars/recency for
+    # lane 3, since code search has no date qualifier to window against) -
+    # there is no "stretch since last time" for either to lose, so their
+    # failures are reported (advisory) but never hold the marker. This is the
+    # mirror image of list_sweep, where the query lane governs the marker and
+    # the watchlist lane is untimed; here it is the query-shaped HN lane that
+    # is windowed and both repo lanes that are not.
     report = LaneReport()
     advisory = []
     raw = github_lane(cfg, floor_date, now, advisory) + hn_lane(
         cfg, since_epoch, report
     )
+    if run_artefacts:
+        raw += artefact_lane(cfg, now, advisory)
 
     seen = state.get("seen", {})
+    content_hashes = state.get("content_hashes", {})
     covered = posted_urls(ledger_file)
     errors = list(report) + advisory
 
-    dropped = {"dup": 0, "own": 0, "seen": 0, "covered": 0, "stars": 0, "points": 0}
+    dropped = {
+        "dup": 0,
+        "own": 0,
+        "seen": 0,
+        "covered": 0,
+        "stars": 0,
+        "points": 0,
+        "fork": 0,
+        "template": 0,
+        "archived": 0,
+        "stale": 0,
+        "dup_content": 0,
+    }
     kept = []
     batch = set()
+    batch_hashes = set()
     for cand in raw:
-        # Seen/dedup key: repo full_name (lowercased) for lane 1, the story
-        # URL for lane 2 - both are stable identities a candidate surfaces
-        # under exactly once.
-        key = cand["repo"].lower() if cand["lane"] == "github" else cand["url"]
+        # Seen/dedup key: repo full_name (lowercased) for the github-flavoured
+        # lanes (1 and 3), the story URL for lane 2 - all stable identities a
+        # candidate surfaces under exactly once. See _dedup_key.
+        key = _dedup_key(cand)
         if key in batch:
             dropped["dup"] += 1
             continue
-        if cand["lane"] == "github" and is_own_repo(cand["repo"], cfg["own_repos"]):
+        if cand["lane"] in ("github", "artefact") and is_own_repo(
+            cand["repo"], cfg["own_repos"]
+        ):
             dropped["own"] += 1
             continue
         if key in seen:
@@ -552,6 +1007,12 @@ def cmd_scan(args):
         if cand["lane"] == "hn" and cand["score_or_stars"] < cfg["hn_min_points"]:
             dropped["points"] += 1
             continue
+        if cand["lane"] == "artefact":
+            reason = _artefact_drop_reason(cand, cfg, now, batch_hashes, content_hashes)
+            if reason:
+                dropped[reason] += 1
+                continue
+            batch_hashes.add(cand["content_hash"])
         batch.add(key)
         kept.append(cand)
 
@@ -569,12 +1030,15 @@ def cmd_scan(args):
     held = not report.clean
     today = now.date().isoformat()
     for cand in kept:
-        key = cand["repo"].lower() if cand["lane"] == "github" else cand["url"]
+        key = _dedup_key(cand)
         # Retrieved and shown to the human, so a re-scan of a held window will
         # not re-surface it; only the never-retrieved rest comes back.
         seen[key] = today
+        if cand["lane"] == "artefact":
+            content_hashes[cand["content_hash"]] = today
     cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
     state["seen"] = {k: d for k, d in seen.items() if d >= cutoff}
+    state["content_hashes"] = {h: d for h, d in content_hashes.items() if d >= cutoff}
     if held:
         print(
             f"WARN {hold_reason(report)} — keeping last_run so this window "
@@ -603,9 +1067,11 @@ def cmd_scan(args):
     out = resolve_module_path(__file__, cfg["candidates_file"])
     write_json_atomic(out, payload)
 
+    artefact_raw = [c for c in raw if c["lane"] == "artefact"]
+    artefact_repos = {c["repo"] for c in artefact_raw}
     print(
         f"TEARDOWN_SWEEP_OK raw={len(raw)} kept={len(kept)} dropped={dropped} "
-        f"errors={len(errors)}"
+        f"errors={len(errors)} artefacts={len(artefact_raw)} repos={len(artefact_repos)}"
     )
     print(
         f"tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
@@ -659,7 +1125,7 @@ def main():
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    scan = sub.add_parser("scan", help="run both lanes, write candidates JSON")
+    scan = sub.add_parser("scan", help="run all lanes, write candidates JSON")
     scan.add_argument(
         "--days",
         type=int,
@@ -671,6 +1137,11 @@ def main():
         "--dry-run",
         action="store_true",
         help="preview queries only: no network, no gh, no state writes",
+    )
+    scan.add_argument(
+        "--no-artefacts",
+        action="store_true",
+        help="skip lane 3 (rate-limited code search) for a quick lanes-1/2 run",
     )
     scan.set_defaults(func=cmd_scan)
 
