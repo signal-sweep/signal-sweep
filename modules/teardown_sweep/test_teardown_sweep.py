@@ -58,6 +58,23 @@ def _full_config():
     return cfg
 
 
+def _venue(name, kind, topics, url="https://example.com/submit", **overrides):
+    """An already-normalized publish_venues entry, for tests that exercise
+    suggest_venues/_venue_match directly rather than through valid_venues -
+    small and explicit rather than depending on the shipped DEFAULTS
+    registry, so these tests keep passing if the real defaults change."""
+    venue = {
+        "name": name,
+        "kind": kind,
+        "url": url,
+        "topics": topics,
+        "etiquette": "be polite",
+        "manual_only": True,
+    }
+    venue.update(overrides)
+    return venue
+
+
 class ConfigTests(unittest.TestCase):
     def _write(self, tmp, cfg):
         p = Path(tmp) / "config.json"
@@ -2115,6 +2132,694 @@ class ArtefactDryRunTests(unittest.TestCase):
         ):
             rc = ts.cmd_scan(args)
         self.assertEqual(rc, 0)
+
+
+class PublishVenueConfigTests(unittest.TestCase):
+    """publish_venues at the load_config altitude: a type check like every
+    other list-shaped config key, and the shipped defaults are real,
+    validation-clean registry entries."""
+
+    def _write(self, tmp, cfg):
+        p = Path(tmp) / "config.json"
+        p.write_text(json.dumps(cfg), encoding="utf-8")
+        return str(p)
+
+    def test_publish_venues_must_be_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                ts.load_config(
+                    self._write(tmp, {"own_repos": [], "publish_venues": "nope"})
+                )
+
+    def test_publish_venues_default_is_filled_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = ts.load_config(self._write(tmp, {"own_repos": []}))
+        self.assertEqual(len(cfg["publish_venues"]), 6)
+        names = {v["name"] for v in cfg["publish_venues"]}
+        self.assertEqual(
+            names,
+            {
+                "Hacker News",
+                "r/LocalLLaMA",
+                "r/ClaudeAI",
+                "r/AI_Agents",
+                "lobste.rs",
+                "dev.to",
+            },
+        )
+
+    def test_default_registry_entries_all_pass_validation_cleanly(self):
+        advisory = []
+        venues = ts.valid_venues(ts.DEFAULTS["publish_venues"], advisory)
+        self.assertEqual(len(venues), len(ts.DEFAULTS["publish_venues"]))
+        self.assertEqual(advisory, [])
+
+
+class PublishVenueValidationTests(unittest.TestCase):
+    """_validate_venue / valid_venues: one bad publish_venues entry is
+    skipped with an advisory note, never a SystemExit - a config typo here
+    is a coverage-advisory issue, not a scan-killing one, mirroring
+    newsletter-sweep's _validate_outlet. manual_only and the
+    subject's-own-space host ban are enforced here, not trusted."""
+
+    def _entry(self, **overrides):
+        base = {
+            "name": "Test Venue",
+            "kind": "hn",
+            "url": "https://example.com/submit",
+            "topics": ["agent"],
+            "etiquette": "be polite",
+            "manual_only": True,
+        }
+        base.update(overrides)
+        return base
+
+    def test_non_dict_entry_is_skipped_with_advisory(self):
+        advisory = []
+        self.assertIsNone(ts._validate_venue("not-a-dict", advisory))
+        self.assertEqual(len(advisory), 1)
+        self.assertIn("not an object", advisory[0])
+
+    def test_missing_required_string_keys_are_skipped(self):
+        for key in ("name", "kind", "url", "etiquette"):
+            with self.subTest(key=key):
+                advisory = []
+                entry = self._entry()
+                del entry[key]
+                self.assertIsNone(ts._validate_venue(entry, advisory))
+                self.assertEqual(len(advisory), 1)
+
+    def test_blank_string_value_is_treated_as_missing(self):
+        advisory = []
+        self.assertIsNone(ts._validate_venue(self._entry(name="   "), advisory))
+        self.assertEqual(len(advisory), 1)
+
+    def test_topics_missing_is_skipped(self):
+        advisory = []
+        entry = self._entry()
+        del entry["topics"]
+        self.assertIsNone(ts._validate_venue(entry, advisory))
+        self.assertIn("topics", advisory[0])
+
+    def test_topics_not_a_list_is_skipped(self):
+        advisory = []
+        self.assertIsNone(ts._validate_venue(self._entry(topics="agent"), advisory))
+
+    def test_topics_with_non_string_element_is_skipped(self):
+        advisory = []
+        self.assertIsNone(
+            ts._validate_venue(self._entry(topics=["agent", 5]), advisory)
+        )
+
+    def test_empty_topics_list_is_valid(self):
+        advisory = []
+        venue = ts._validate_venue(self._entry(topics=[]), advisory)
+        self.assertIsNotNone(venue)
+        self.assertEqual(venue["topics"], [])
+        self.assertEqual(advisory, [])
+
+    def test_manual_only_false_is_rejected(self):
+        advisory = []
+        self.assertIsNone(ts._validate_venue(self._entry(manual_only=False), advisory))
+        self.assertIn("manual_only", advisory[0])
+
+    def test_manual_only_missing_is_rejected(self):
+        advisory = []
+        entry = self._entry()
+        del entry["manual_only"]
+        self.assertIsNone(ts._validate_venue(entry, advisory))
+        self.assertIn("manual_only", advisory[0])
+
+    def test_manual_only_truthy_non_bool_is_rejected(self):
+        # 1 == True in Python but is not True; the boundary this field
+        # guards is worth an `is True` check, not a truthy one.
+        advisory = []
+        self.assertIsNone(ts._validate_venue(self._entry(manual_only=1), advisory))
+
+    def test_github_host_is_rejected(self):
+        advisory = []
+        entry = self._entry(url="https://github.com/some/repo/issues")
+        self.assertIsNone(ts._validate_venue(entry, advisory))
+        self.assertIn("subject's own space", advisory[0])
+
+    def test_www_github_host_is_rejected(self):
+        advisory = []
+        entry = self._entry(url="https://www.github.com/some/repo")
+        self.assertIsNone(ts._validate_venue(entry, advisory))
+
+    def test_non_github_host_with_github_in_the_path_is_not_rejected(self):
+        # Only the HOST is checked, not the url text generally - a venue
+        # legitimately pathed/named around "github" elsewhere must not be
+        # caught by an over-broad substring check.
+        advisory = []
+        entry = self._entry(url="https://example.com/github-teardowns/submit")
+        venue = ts._validate_venue(entry, advisory)
+        self.assertIsNotNone(venue)
+        self.assertEqual(advisory, [])
+
+    def test_valid_entry_is_normalized(self):
+        advisory = []
+        venue = ts._validate_venue(self._entry(), advisory)
+        self.assertEqual(
+            venue,
+            {
+                "name": "Test Venue",
+                "kind": "hn",
+                "url": "https://example.com/submit",
+                "topics": ["agent"],
+                "etiquette": "be polite",
+                "manual_only": True,
+            },
+        )
+        self.assertEqual(advisory, [])
+
+    def test_valid_venues_skips_bad_entries_without_killing_the_rest(self):
+        raw = [
+            self._entry(name="Good One"),
+            {"name": "Broken", "kind": "hn"},  # missing url/topics/etiquette
+            self._entry(name="Also Good", url="https://example.org/submit"),
+            self._entry(name="Flips The Flag", manual_only=False),
+        ]
+        advisory = []
+        venues = ts.valid_venues(raw, advisory)
+        self.assertEqual([v["name"] for v in venues], ["Good One", "Also Good"])
+        self.assertEqual(len(advisory), 2)
+
+    def test_valid_venues_empty_raw_returns_empty_list(self):
+        self.assertEqual(ts.valid_venues([], []), [])
+
+    def test_valid_venues_none_raw_returns_empty_list(self):
+        self.assertEqual(ts.valid_venues(None, []), [])
+
+
+class CandidateTopicHaystackTests(unittest.TestCase):
+    """_candidate_topic_haystack: the text surface venue topics are matched
+    against, built only from fields the candidate already carries."""
+
+    def test_includes_matched_keywords(self):
+        cand = {"matched_keywords": ["memory", "orchestration"]}
+        haystack = ts._candidate_topic_haystack(cand)
+        self.assertIn("memory", haystack)
+        self.assertIn("orchestration", haystack)
+
+    def test_strips_topic_prefix_from_pattern(self):
+        cand = {"pattern": "topic:agentic-ai"}
+        self.assertIn("agentic-ai", ts._candidate_topic_haystack(cand))
+
+    def test_plain_phrase_pattern_included_verbatim(self):
+        cand = {"pattern": "claude code setup"}
+        self.assertIn("claude code setup", ts._candidate_topic_haystack(cand))
+
+    def test_includes_artefact_label(self):
+        cand = {"artefact_label": "claude-md"}
+        self.assertIn("claude-md", ts._candidate_topic_haystack(cand))
+
+    def test_includes_patterns_present(self):
+        cand = {"patterns_present": ["p01", "p05"]}
+        haystack = ts._candidate_topic_haystack(cand)
+        self.assertIn("p01", haystack)
+        self.assertIn("p05", haystack)
+
+    def test_missing_fields_produce_safe_empty_string_not_crash(self):
+        self.assertEqual(ts._candidate_topic_haystack({}), "   ")
+
+    def test_haystack_is_lowercased(self):
+        cand = {"artefact_label": "Claude-MD"}
+        self.assertIn("claude-md", ts._candidate_topic_haystack(cand))
+
+
+class VenueMatchTests(unittest.TestCase):
+    """_venue_match: the provenance short-circuit for lane 'hn' against an
+    'hn'-kind venue, and plain topical-overlap counting for everything
+    else - including artefact-lane candidates, which have no provenance
+    rule of their own (see the module's publish-venue-suggestions banner
+    comment)."""
+
+    def test_hn_lane_gets_provenance_for_hn_kind_venue(self):
+        cand = {"lane": "hn", "matched_keywords": [], "pattern": ""}
+        venue = _venue("HN", "hn", ["agent"])
+        self.assertEqual(
+            ts._venue_match(cand, venue), (ts.PROVENANCE_SCORE, ts.PROVENANCE_WHY)
+        )
+
+    def test_provenance_fires_even_with_zero_topical_overlap(self):
+        cand = {"lane": "hn", "matched_keywords": [], "pattern": "unrelated phrase"}
+        venue = _venue("HN", "hn", ["something-else-entirely"])
+        self.assertIsNotNone(ts._venue_match(cand, venue))
+        self.assertEqual(ts._venue_match(cand, venue)[0], ts.PROVENANCE_SCORE)
+
+    def test_non_hn_lane_gets_no_provenance_for_hn_venue(self):
+        cand = {"lane": "github", "matched_keywords": [], "pattern": "agent"}
+        venue = _venue("HN", "hn", ["agent"])
+        score, why = ts._venue_match(cand, venue)
+        self.assertNotEqual(score, ts.PROVENANCE_SCORE)
+        self.assertNotEqual(why, ts.PROVENANCE_WHY)
+
+    def test_hn_lane_against_non_hn_venue_is_a_plain_topical_match(self):
+        cand = {"lane": "hn", "matched_keywords": ["memory"], "pattern": ""}
+        venue = _venue("Lobsters", "lobsters", ["memory", "practices"])
+        self.assertEqual(ts._venue_match(cand, venue), (1, "topic overlap: memory"))
+
+    def test_topical_hit_count_and_why_lists_every_hit(self):
+        cand = {"pattern": "topic:agentic-ai", "matched_keywords": ["agent"]}
+        venue = _venue("AI Agents", "reddit", ["agent", "agentic-ai", "multi-agent"])
+        score, why = ts._venue_match(cand, venue)
+        self.assertEqual(score, 2)
+        self.assertEqual(why, "topic overlap: agent, agentic-ai")
+
+    def test_no_hits_returns_none(self):
+        cand = {"lane": "github", "matched_keywords": [], "pattern": "nothing here"}
+        venue = _venue("Lobsters", "lobsters", ["ai", "practices"])
+        self.assertIsNone(ts._venue_match(cand, venue))
+
+
+class SuggestVenuesTests(unittest.TestCase):
+    """suggest_venues: the full ranking - provenance + topical scoring,
+    at-most-one-per-kind, capped at MAX_SUGGESTED_VENUES, deterministic on
+    ties. Uses small explicit venue fixtures (see _venue above) rather than
+    the shipped DEFAULTS, so these stay independent of registry edits."""
+
+    def test_empty_registry_returns_empty_list(self):
+        cand = {"lane": "hn", "matched_keywords": [], "pattern": "agent"}
+        self.assertEqual(ts.suggest_venues(cand, []), [])
+
+    def test_no_matching_venue_returns_empty_list(self):
+        cand = {"lane": "github", "matched_keywords": [], "pattern": "nothing"}
+        venues = [_venue("Lobsters", "lobsters", ["ai", "practices"])]
+        self.assertEqual(ts.suggest_venues(cand, venues), [])
+
+    def test_cap_at_three_suggestions_across_four_matching_kinds(self):
+        cand = {"lane": "github", "matched_keywords": [], "pattern": "agent"}
+        venues = [
+            _venue("V-HN", "hn", ["agent"]),
+            _venue("V-Reddit", "reddit", ["agent"]),
+            _venue("V-Lobsters", "lobsters", ["agent"]),
+            _venue("V-Devto", "devto", ["agent"]),
+        ]
+        out = ts.suggest_venues(cand, venues)
+        self.assertEqual(len(out), ts.MAX_SUGGESTED_VENUES)
+        self.assertEqual([s["name"] for s in out], ["V-HN", "V-Reddit", "V-Lobsters"])
+
+    def test_kind_diversity_keeps_only_the_best_per_kind(self):
+        cand = {
+            "lane": "github",
+            "matched_keywords": [],
+            "pattern": "claude code local-llm agent self-hosted",
+        }
+        venues = [
+            _venue("r/LocalLLaMA", "reddit", ["local-llm", "self-hosted"]),
+            _venue("r/ClaudeAI", "reddit", ["claude"]),
+            _venue("r/AI_Agents", "reddit", ["agent"]),
+            _venue("HN", "hn", ["agent"]),
+        ]
+        out = ts.suggest_venues(cand, venues)
+        reddit_names = {v["name"] for v in venues if v["kind"] == "reddit"}
+        picked_reddit = [s["name"] for s in out if s["name"] in reddit_names]
+        self.assertEqual(picked_reddit, ["r/LocalLLaMA"])
+
+    def test_deterministic_tie_break_keeps_registry_order(self):
+        cand = {"lane": "github", "matched_keywords": [], "pattern": "x"}
+        venues = [
+            _venue("First", "a", ["x"]),
+            _venue("Second", "b", ["x"]),
+            _venue("Third", "c", ["x"]),
+        ]
+        out = ts.suggest_venues(cand, venues)
+        self.assertEqual([s["name"] for s in out], ["First", "Second", "Third"])
+
+    def test_artefact_lane_matches_via_artefact_label(self):
+        cand = {
+            "lane": "artefact",
+            "artefact_label": "claude-md",
+            "patterns_present": [],
+        }
+        venues = [_venue("r/ClaudeAI", "reddit", ["claude", "claude-code"])]
+        out = ts.suggest_venues(cand, venues)
+        self.assertEqual(out, [{"name": "r/ClaudeAI", "why": "topic overlap: claude"}])
+
+    def test_provenance_venue_ranks_above_a_strong_topical_match(self):
+        cand = {"lane": "hn", "matched_keywords": [], "pattern": "agent dev-tools"}
+        venues = [
+            # Registered AFTER the topical venue, but provenance must still
+            # sort first - PROVENANCE_SCORE comfortably outranks any
+            # realistic topic-hit count.
+            _venue("Topical", "reddit", ["agent", "dev-tools"]),
+            _venue("HN", "hn", ["agent"]),
+        ]
+        out = ts.suggest_venues(cand, venues)
+        self.assertEqual(out[0]["name"], "HN")
+        self.assertEqual(out[0]["why"], ts.PROVENANCE_WHY)
+
+    def test_output_entries_have_only_name_and_why(self):
+        cand = {"lane": "hn", "matched_keywords": [], "pattern": "agent"}
+        venues = [_venue("HN", "hn", ["agent"])]
+        out = ts.suggest_venues(cand, venues)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(set(out[0].keys()), {"name", "why"})
+
+    def test_never_list_venue_never_reaches_suggestions(self):
+        # The full pipeline: a registry entry aimed at the subject's own
+        # space is dropped by valid_venues, so it never even reaches
+        # suggest_venues - even against a candidate it would otherwise
+        # match perfectly.
+        raw = list(ts.DEFAULTS["publish_venues"]) + [
+            {
+                "name": "Subject Own Issue Tracker",
+                "kind": "github-issues",
+                "url": "https://github.com/some/subject/issues",
+                "topics": ["agent", "claude", "memory"],
+                "etiquette": "n/a",
+                "manual_only": True,
+            }
+        ]
+        advisory = []
+        venues = ts.valid_venues(raw, advisory)
+        self.assertTrue(any("Subject Own" in msg for msg in advisory))
+        cand = {
+            "lane": "hn",
+            "matched_keywords": ["memory"],
+            "pattern": "claude code setup agent",
+        }
+        out = ts.suggest_venues(cand, venues)
+        self.assertTrue(all(s["name"] != "Subject Own Issue Tracker" for s in out))
+
+
+class MarkCoveredPostedToTests(unittest.TestCase):
+    """--posted-to: where a finished teardown actually went, once it's
+    known. Optional and repeatable; the ledger and `log` both round-trip
+    it. See MarkCoveredLogTests above for the pre-existing url/note/log
+    coverage this extends without duplicating."""
+
+    def test_single_posted_to_is_recorded(self):
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            with mock.patch.object(ts, "load_config", return_value=cfg):
+                args = mock.Mock(
+                    config="config.json",
+                    url="https://github.com/a/b",
+                    note="n",
+                    posted_to=["Hacker News"],
+                )
+                ts.cmd_mark_covered(args)
+            ledger = Path(cfg["state_dir"]) / "covered_log.jsonl"
+            entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(entry["posted_to"], ["Hacker News"])
+
+    def test_repeated_posted_to_flag_collects_a_list(self):
+        # action="append" is what argparse gives cmd_mark_covered when
+        # --posted-to is passed more than once; simulate its output shape
+        # directly rather than re-testing argparse itself.
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            with mock.patch.object(ts, "load_config", return_value=cfg):
+                args = mock.Mock(
+                    config="config.json",
+                    url="https://x",
+                    note=None,
+                    posted_to=["Hacker News", "r/ClaudeAI"],
+                )
+                ts.cmd_mark_covered(args)
+            ledger = Path(cfg["state_dir"]) / "covered_log.jsonl"
+            entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(entry["posted_to"], ["Hacker News", "r/ClaudeAI"])
+
+    def test_posted_to_none_normalizes_to_empty_list(self):
+        # Real argparse shape when the flag was never passed.
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            with mock.patch.object(ts, "load_config", return_value=cfg):
+                args = mock.Mock(
+                    config="config.json", url="https://x", note=None, posted_to=None
+                )
+                ts.cmd_mark_covered(args)
+            ledger = Path(cfg["state_dir"]) / "covered_log.jsonl"
+            entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(entry["posted_to"], [])
+
+    def test_bare_mock_without_posted_to_set_does_not_crash(self):
+        # Regression guard: a bare mock.Mock() auto-vivifies an unset
+        # attribute as a truthy child Mock, not None - exactly the
+        # no_artefacts footgun cmd_scan's own comment documents. Without the
+        # isinstance guard in cmd_mark_covered this would try to
+        # json-serialize a Mock object and blow up append_ledger.
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            with mock.patch.object(ts, "load_config", return_value=cfg):
+                args = mock.Mock(config="config.json", url="https://x", note=None)
+                rc = ts.cmd_mark_covered(args)
+            ledger = Path(cfg["state_dir"]) / "covered_log.jsonl"
+            entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(rc, 0)
+        self.assertEqual(entry["posted_to"], [])
+
+    def test_log_prints_posted_to_suffix(self):
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "covered_log.jsonl").write_text(
+                json.dumps(
+                    {
+                        "date": "2026-01-01T00:00:00+00:00",
+                        "url": "https://x",
+                        "note": "n",
+                        "posted_to": ["Hacker News", "r/ClaudeAI"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(ts, "load_config", return_value=cfg),
+                contextlib.redirect_stdout(buf),
+            ):
+                ts.cmd_log(mock.Mock(config="config.json"))
+        self.assertIn("posted: Hacker News, r/ClaudeAI", buf.getvalue())
+
+    def test_log_omits_suffix_when_posted_to_empty(self):
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "covered_log.jsonl").write_text(
+                json.dumps(
+                    {
+                        "date": "2026-01-01T00:00:00+00:00",
+                        "url": "https://x",
+                        "note": "n",
+                        "posted_to": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(ts, "load_config", return_value=cfg),
+                contextlib.redirect_stdout(buf),
+            ):
+                ts.cmd_log(mock.Mock(config="config.json"))
+        self.assertNotIn("posted:", buf.getvalue())
+
+    def test_log_handles_legacy_entries_without_posted_to_key(self):
+        # A ledger line written before this feature existed has no
+        # posted_to key at all - log must not KeyError on it.
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "covered_log.jsonl").write_text(
+                json.dumps(
+                    {
+                        "date": "2026-01-01T00:00:00+00:00",
+                        "url": "https://x",
+                        "note": "",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(ts, "load_config", return_value=cfg),
+                contextlib.redirect_stdout(buf),
+            ):
+                rc = ts.cmd_log(mock.Mock(config="config.json"))
+        self.assertEqual(rc, 0)
+        self.assertIn("https://x", buf.getvalue())
+        self.assertNotIn("posted:", buf.getvalue())
+
+
+class ScanSuggestedVenuesIntegrationTests(unittest.TestCase):
+    """suggested_venues wired into a real cmd_scan run: every kept
+    candidate carries it, and a malformed publish_venues entry never
+    crashes or holds the scan. Mirrors ScanIntegrationTests' _run_scan
+    shape above."""
+
+    def _run_scan(self, tmp, *, github_nodes=None, hn_hits=None, publish_venues=None):
+        cfg = _full_config()
+        cfg["state_dir"] = str(Path(tmp) / "state")
+        cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+        cfg["search_queries"] = ["agent architecture"]
+        cfg["topics"] = []
+        cfg["hn_queries"] = ["agent architecture"]
+        if publish_venues is not None:
+            cfg["publish_venues"] = publish_venues
+
+        args = mock.Mock(config="config.json", days=30, limit=None, dry_run=False)
+
+        def _search_repos(query, limit, extra_args, errors):
+            return github_nodes or []
+
+        def _http_get(url, timeout=None, headers=None):
+            return 200, json.dumps({"hits": hn_hits or []}), None
+
+        with (
+            mock.patch.object(ts, "load_config", return_value=cfg),
+            mock.patch.object(ts, "search_repos", side_effect=_search_repos),
+            mock.patch.object(ts, "fetch_readme_text", return_value=""),
+            mock.patch.object(ts, "has_docs_dir", return_value=False),
+            mock.patch.object(ts, "http_get", side_effect=_http_get),
+        ):
+            rc = ts.cmd_scan(args)
+        payload = json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
+        return rc, payload
+
+    def test_kept_github_candidate_carries_suggested_venues_field(self):
+        nodes = [
+            {
+                "fullName": "good/repo",
+                "description": "an agent workspace",
+                "stargazersCount": 500,
+                "url": "https://github.com/good/repo",
+                "pushedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload = self._run_scan(tmp, github_nodes=nodes)
+        self.assertEqual(rc, 0)
+        github_cands = [c for c in payload["candidates"] if c["lane"] == "github"]
+        self.assertEqual(len(github_cands), 1)
+        self.assertIn("suggested_venues", github_cands[0])
+        self.assertIsInstance(github_cands[0]["suggested_venues"], list)
+
+    def test_kept_hn_candidate_gets_hn_provenance_suggestion(self):
+        hits = [
+            {"objectID": "1", "title": "agent architecture deep dive", "points": 50}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload = self._run_scan(tmp, hn_hits=hits)
+        self.assertEqual(rc, 0)
+        hn_cands = [c for c in payload["candidates"] if c["lane"] == "hn"]
+        self.assertEqual(len(hn_cands), 1)
+        suggestions = hn_cands[0]["suggested_venues"]
+        hn_entry = next(s for s in suggestions if s["name"] == "Hacker News")
+        self.assertEqual(hn_entry["why"], ts.PROVENANCE_WHY)
+
+    def test_malformed_publish_venues_entry_does_not_crash_or_hold_scan(self):
+        nodes = [
+            {
+                "fullName": "good/repo2",
+                "description": "an agent",
+                "stargazersCount": 500,
+                "url": "https://github.com/good/repo2",
+                "pushedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        broken_venues = list(ts.DEFAULTS["publish_venues"]) + [
+            {"name": "Broken", "kind": "hn"}
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload = self._run_scan(
+                tmp, github_nodes=nodes, publish_venues=broken_venues
+            )
+        self.assertEqual(rc, 0)
+        self.assertFalse(payload["window_held"])
+        github_cands = [c for c in payload["candidates"] if c["lane"] == "github"]
+        self.assertEqual(len(github_cands), 1)
+        self.assertIsInstance(github_cands[0]["suggested_venues"], list)
+        self.assertTrue(any("Broken" in e for e in payload["errors"]))
+
+
+class ArtefactScanSuggestedVenuesIntegrationTests(unittest.TestCase):
+    """Lane 3's own signal (artefact_label) drives a real suggestion the
+    same way lanes 1-2's matched_keywords/pattern do. Mirrors
+    ArtefactScanIntegrationTests' fixture shape above."""
+
+    def _hit(self, repo, path="CLAUDE.md"):
+        return {
+            "path": path,
+            "html_url": f"https://github.com/{repo}/blob/x/{path}",
+            "repository": {"full_name": repo},
+        }
+
+    def _meta(self, **overrides):
+        base = {
+            "stargazers_count": 100,
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_artefact_candidate_gets_claude_venue_suggestion_via_label(self):
+        cfg = _full_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+            cfg["search_queries"] = []
+            cfg["topics"] = []
+            cfg["hn_queries"] = []
+            cfg["artefact_queries"] = [
+                {"label": "claude-md", "query": "filename:CLAUDE.md size:>4000"}
+            ]
+            state_dir = Path(cfg["state_dir"])
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "teardown_state.json").write_text(
+                json.dumps({"last_run": None, "seen": {}, "content_hashes": {}}),
+                encoding="utf-8",
+            )
+
+            def _search_code_page(query, page, per_page):
+                return ([self._hit("good/repo")] if page == 1 else []), None
+
+            args = mock.Mock(
+                config="config.json",
+                days=30,
+                limit=None,
+                dry_run=False,
+                no_artefacts=False,
+            )
+            with (
+                mock.patch.object(ts, "load_config", return_value=cfg),
+                mock.patch.object(
+                    ts, "search_code_page", side_effect=_search_code_page
+                ),
+                mock.patch.object(ts, "fetch_repo_meta", return_value=self._meta()),
+                mock.patch.object(
+                    ts, "fetch_artefact_content", return_value="memory index"
+                ),
+                mock.patch.object(ts.time, "sleep"),
+            ):
+                rc = ts.cmd_scan(args)
+            payload = json.loads(
+                Path(cfg["candidates_file"]).read_text(encoding="utf-8")
+            )
+        self.assertEqual(rc, 0)
+        art = [c for c in payload["candidates"] if c["lane"] == "artefact"]
+        self.assertEqual(len(art), 1)
+        names = [v["name"] for v in art[0]["suggested_venues"]]
+        self.assertIn("r/ClaudeAI", names)
 
 
 class NoOutboundTests(unittest.TestCase):

@@ -24,6 +24,13 @@ human approval; this module has no outbound action to gate. A human reads
 candidates.json and decides, entirely outside this tool, whether and how to
 write a teardown.
 
+Each kept candidate also carries suggested_venues: up to three third-party
+communities worth a manual submission once the teardown is written, ranked
+from signals already on the candidate (see publish_venues in config.json
+and README's "Where to publish" section). Still discovery only - the
+module computes WHERE a finished write-up would fit, never submits
+anything itself, anywhere.
+
 SECURITY: every description/README/title/artefact fetched here is UNTRUSTED
 EXTERNAL CONTENT. It is scanned for configured keywords/patterns and stored
 (truncated) for a human to read later - never executed, never treated as an
@@ -43,7 +50,9 @@ script, so the module reads its own state and config from any directory):
   scan [--days N] [--limit N] [--dry-run] [--no-artefacts]
                                              run all lanes, write candidates
                                              (--no-artefacts skips lane 3)
-  mark-covered --url U [--note ...]         record a completed teardown
+  mark-covered --url U [--note ...] [--posted-to V ...]
+                                             record a completed teardown
+                                             (--posted-to is repeatable)
   log                                       show recorded teardowns
 """
 
@@ -56,7 +65,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
@@ -77,6 +86,33 @@ from sweepcore import (  # noqa: E402
 )
 
 REQUIRED_KEYS = ["own_repos"]
+
+# Etiquette strings for the shipped publish_venues defaults below (see also
+# README's "Where to publish" section, which renders these as a table).
+# Defined once and reused across the three reddit entries - Reddit's
+# self-promotion mechanics are the same across subs, only each sub's own
+# `topics` differ.
+_HN_ETIQUETTE = (
+    "Regular submission, never Show HN. Show HN is for the poster's own "
+    "project, so a teardown of someone else's work goes in as a normal "
+    "link submission. Keep the title neutral and factual, no editorializing."
+)
+_REDDIT_ETIQUETTE = (
+    "Check the subreddit's self-promotion rule before posting. Prefer a "
+    "text post that summarizes the findings with the link included, not a "
+    "bare link drop. Shadowban removals are invisible, so verify the post "
+    "is visible while logged out."
+)
+_LOBSTERS_ETIQUETTE = (
+    "Invite-only account required. Tag accurately (ai, practices) and "
+    "skip any tag that doesn't fit. The community punishes marketing tone."
+)
+_DEVTO_ETIQUETTE = (
+    "A full cross-post or a canonical-URL republish both work here. Set "
+    "the canonical_url front matter so the original page keeps search "
+    "authority."
+)
+
 DEFAULTS = {
     # Generic, domain-level discovery terms (not project-specific), so a fresh
     # checkout can scan immediately - only own_repos needs real editing.
@@ -201,6 +237,62 @@ DEFAULTS = {
     "default_window_days": 30,
     "state_dir": "state",
     "candidates_file": "candidates.json",
+    # Publish-venue registry: where a FINISHED teardown could be manually
+    # submitted. Every entry is a fixed, hand-curated third-party community -
+    # never a per-candidate space (see FORBIDDEN_VENUE_HOSTS below) - and
+    # manual_only is always literally True (_validate_venue enforces it).
+    # See README's "Where to publish" section for the etiquette table this
+    # renders as.
+    "publish_venues": [
+        {
+            "name": "Hacker News",
+            "kind": "hn",
+            "url": "https://news.ycombinator.com/submit",
+            "topics": ["broad", "agent", "dev-tools"],
+            "etiquette": _HN_ETIQUETTE,
+            "manual_only": True,
+        },
+        {
+            "name": "r/LocalLLaMA",
+            "kind": "reddit",
+            "url": "https://www.reddit.com/r/LocalLLaMA/submit",
+            "topics": ["local-llm", "self-hosted", "open-weights"],
+            "etiquette": _REDDIT_ETIQUETTE,
+            "manual_only": True,
+        },
+        {
+            "name": "r/ClaudeAI",
+            "kind": "reddit",
+            "url": "https://www.reddit.com/r/ClaudeAI/submit",
+            "topics": ["claude", "claude-code", "anthropic"],
+            "etiquette": _REDDIT_ETIQUETTE,
+            "manual_only": True,
+        },
+        {
+            "name": "r/AI_Agents",
+            "kind": "reddit",
+            "url": "https://www.reddit.com/r/AI_Agents/submit",
+            "topics": ["agent", "agentic-ai", "multi-agent"],
+            "etiquette": _REDDIT_ETIQUETTE,
+            "manual_only": True,
+        },
+        {
+            "name": "lobste.rs",
+            "kind": "lobsters",
+            "url": "https://lobste.rs/stories/new",
+            "topics": ["ai", "practices"],
+            "etiquette": _LOBSTERS_ETIQUETTE,
+            "manual_only": True,
+        },
+        {
+            "name": "dev.to",
+            "kind": "devto",
+            "url": "https://dev.to/new",
+            "topics": ["ai", "devtools", "programming"],
+            "etiquette": _DEVTO_ETIQUETTE,
+            "manual_only": True,
+        },
+    ],
 }
 
 UA = "teardown-sweep (https://github.com/signal-sweep/signal-sweep)"
@@ -242,6 +334,7 @@ def load_config(path):
         "hn_queries",
         "richness_keywords",
         "artefact_queries",
+        "publish_venues",
     ):
         if not isinstance(cfg[key], list):
             sys.exit(f"config {key!r} must be a list")
@@ -872,6 +965,181 @@ def _artefact_drop_reason(cand, cfg, now, batch_hashes, prior_hashes):
     return None
 
 
+# --- publish venue suggestions ------------------------------------------
+#
+# Still discovery intelligence, not outreach: this section computes WHERE a
+# finished teardown could go, deterministically, from signals already on the
+# candidate. publish_venues is a small hand-curated registry of third-party
+# communities - the same "hand-curated, never silently dropped" shape
+# newsletter-sweep's outlet registry and cfp-sweep's venue watchlist use -
+# and suggest_venues only ever ranks entries already in that registry. It
+# never drafts a submission, never opens a form, never posts anywhere; a
+# human reads suggested_venues, reads README's Etiquette section, and posts
+# (or doesn't) entirely outside this tool.
+
+# The subject's own repo, forum, or issue tracker is never a suggested
+# venue - a teardown landing in a space the subject's author controls reads
+# as an ambush no matter how it got there. Every subject this module
+# surfaces lives on GitHub (lanes 1 and 3 directly; lane 2's HN discussion
+# nearly always links back to one), so forbidding github.com as a registry
+# HOST is the structural form of that rule: not a venue entry to filter per
+# candidate, a host no registry entry may ever carry at all. Enforced in
+# _validate_venue below, not left as a comment. A private heads-up to the
+# author before or at publication, if the writer wants to extend one, is a
+# human judgment call this module leaves alone - see README's "Where to
+# publish" section.
+FORBIDDEN_VENUE_HOSTS = {"github.com", "www.github.com"}
+
+REQUIRED_VENUE_STR_KEYS = ["name", "kind", "url", "etiquette"]
+
+# A lane-2 (HN) discovered subject's audience already engaged with it there,
+# independent of any topic-string overlap - the one provenance-based boost
+# (see _venue_match). PROVENANCE_SCORE only needs to outrank the largest
+# plausible topical-match count (every shipped venue carries 2-3 topics), so
+# a small constant is margin enough without needing to be huge.
+PROVENANCE_SCORE = 10
+PROVENANCE_WHY = "HN audience already engaged with this subject"
+
+# Suggestions returned per candidate, after the kind-diversity cap below.
+MAX_SUGGESTED_VENUES = 3
+
+
+def _validate_venue(entry, advisory):
+    """Validate + normalize one publish_venues registry entry. Returns a
+    normalized dict, or None (with an advisory message) if the entry is too
+    broken to use - the same per-entry fail-soft shape newsletter-sweep's
+    _validate_outlet applies to its own registry, so one bad config entry
+    never kills the scan (see valid_venues).
+
+    manual_only must be present and literally True. The field is always
+    true by construction - nothing in this module posts anywhere - so it
+    exists to make that boundary self-documenting in the config itself; an
+    entry that flips it is rejected exactly like a structurally wrong
+    top-level config key is rejected, rather than silently trusted."""
+    if not isinstance(entry, dict):
+        advisory.append(f"publish_venues entry is not an object, skipped: {entry!r}")
+        return None
+    missing = [
+        k
+        for k in REQUIRED_VENUE_STR_KEYS
+        if not isinstance(entry.get(k), str) or not entry.get(k).strip()
+    ]
+    topics = entry.get("topics")
+    if not isinstance(topics, list) or not all(
+        isinstance(t, str) and t.strip() for t in topics
+    ):
+        missing.append("topics")
+    if missing:
+        advisory.append(
+            f"publish_venues entry missing/invalid {missing}, skipped: {entry!r}"
+        )
+        return None
+    if entry.get("manual_only") is not True:
+        advisory.append(
+            f"{entry['name']}: manual_only must be true (this module never "
+            "posts anywhere), skipped"
+        )
+        return None
+    host = urlsplit(entry["url"]).netloc.lower()
+    if host in FORBIDDEN_VENUE_HOSTS:
+        advisory.append(
+            f"{entry['name']}: venue url host {host!r} is the subject's own "
+            "space, never a valid publish venue, skipped"
+        )
+        return None
+    return {
+        "name": entry["name"],
+        "kind": entry["kind"],
+        "url": entry["url"],
+        "topics": list(topics),
+        "etiquette": entry["etiquette"],
+        "manual_only": True,
+    }
+
+
+def valid_venues(raw_venues, advisory):
+    """Normalize the publish_venues registry once per scan. A malformed or
+    manual_only-violating entry is skipped with an advisory note rather than
+    killing the run - mirrors newsletter-sweep's per-outlet validation. An
+    empty or entirely-invalid registry returns []; suggest_venues already
+    treats that as nothing to suggest, never an error."""
+    out = []
+    for entry in raw_venues or []:
+        venue = _validate_venue(entry, advisory)
+        if venue is not None:
+            out.append(venue)
+    return out
+
+
+def _candidate_topic_haystack(cand):
+    """Lowercase text surface a venue's topics are matched against: keyword
+    hits already scored (matched_keywords, lanes 1-2), the query/topic that
+    surfaced the candidate (pattern), and lane 3's artefact_label
+    ("claude-md" etc.) plus patterns_present labels - fields the candidate
+    already carries, not a second parallel vocabulary. Mirrors
+    score_readme_richness's haystack-scan idiom: a topic counts as present
+    on a single substring hit."""
+    bits = [
+        " ".join(cand.get("matched_keywords") or []),
+        cand.get("pattern") or "",
+        cand.get("artefact_label") or "",
+        " ".join(cand.get("patterns_present") or []),
+    ]
+    return " ".join(bits).lower()
+
+
+def _venue_match(cand, venue):
+    """(score, why) for one venue against one candidate, or None if the
+    venue is not a fit at all.
+
+    Provenance is the one lane-specific rule: an HN-discovered candidate
+    (lane "hn") matches any registered "hn"-kind venue at PROVENANCE_SCORE
+    regardless of topical overlap - that audience already saw the subject.
+    Every other case, artefact-lane candidates included (their provenance
+    has no single-venue equivalent; topic overlap is the whole rule for
+    them), is a plain topical match: how many of the venue's configured
+    topics show up in the candidate's own topic haystack. No scoring
+    theatre beyond that - one constant for the provenance case, a plain
+    count for everything else."""
+    if cand.get("lane") == "hn" and venue["kind"] == "hn":
+        return PROVENANCE_SCORE, PROVENANCE_WHY
+    haystack = _candidate_topic_haystack(cand)
+    hits = [t for t in venue["topics"] if t.lower() in haystack]
+    if not hits:
+        return None
+    return len(hits), f"topic overlap: {', '.join(hits)}"
+
+
+def suggest_venues(cand, venues):
+    """Ordered [{name, why}] for one kept candidate, strongest match first.
+
+    At most one venue per `kind` survives: a candidate that fits three
+    subreddits still only recommends the best-matching one, so the list
+    stays a spread of different places to post rather than three flavours
+    of the same one. Capped at MAX_SUGGESTED_VENUES. Ties keep registry
+    order (list.sort is stable), so output is deterministic across runs for
+    a given config. An empty registry, or a candidate that matches nothing
+    in it, returns []."""
+    scored = []
+    for venue in venues:
+        match = _venue_match(cand, venue)
+        if match is None:
+            continue
+        score, why = match
+        scored.append((score, venue["kind"], venue["name"], why))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    picked_kinds = set()
+    out = []
+    for _score, kind, name, why in scored:
+        if kind in picked_kinds:
+            continue
+        picked_kinds.add(kind)
+        out.append({"name": name, "why": why})
+        if len(out) == MAX_SUGGESTED_VENUES:
+            break
+    return out
+
+
 # --- scan --------------------------------------------------------------
 
 
@@ -955,6 +1223,11 @@ def cmd_scan(args):
     # is windowed and both repo lanes that are not.
     report = LaneReport()
     advisory = []
+    # Registry validation before the lanes run, so a malformed publish_venues
+    # entry's advisory note lands in `errors` below like any other
+    # advisory-only issue - never gating, never killing the scan (see
+    # valid_venues / _validate_venue).
+    venues = valid_venues(cfg["publish_venues"], advisory)
     raw = github_lane(cfg, floor_date, now, advisory) + hn_lane(
         cfg, since_epoch, report
     )
@@ -1031,6 +1304,7 @@ def cmd_scan(args):
     today = now.date().isoformat()
     for cand in kept:
         key = _dedup_key(cand)
+        cand["suggested_venues"] = suggest_venues(cand, venues)
         # Retrieved and shown to the human, so a re-scan of a held window will
         # not re-surface it; only the never-retrieved rest comes back.
         seen[key] = today
@@ -1086,10 +1360,20 @@ def cmd_scan(args):
 def cmd_mark_covered(args):
     cfg = load_config(args.config)
     _state_dir, _state, ledger_file = state_paths(cfg)
+    # isinstance-guarded rather than `args.posted_to or []`: a bare
+    # mock.Mock() args object (every pre-this-feature test constructs one)
+    # auto-vivifies an unset attribute as a truthy child Mock, not None - the
+    # same footgun cmd_scan's run_artefacts already works around for
+    # no_artefacts. Real argparse gives None (flag never passed) or a list
+    # (--posted-to used, repeatable via action="append"); anything else
+    # normalizes to "wasn't given" rather than leaking a non-JSON-able value
+    # into the ledger.
+    posted_to = args.posted_to if isinstance(args.posted_to, list) else []
     entry = {
         "date": datetime.now(timezone.utc).isoformat(),
         "url": args.url,
         "note": args.note or "",
+        "posted_to": posted_to,
     }
     append_ledger(ledger_file, entry)
     print(f"LEDGER_OK {args.url} <- marked covered")
@@ -1110,7 +1394,12 @@ def cmd_log(args):
             e = json.loads(line)
         except json.JSONDecodeError:
             continue
-        print(f"  {e.get('date', '')[:10]}  {e.get('url', ''):<60} {e.get('note', '')}")
+        posted_to = e.get("posted_to") or []
+        posted_note = f"  [posted: {', '.join(posted_to)}]" if posted_to else ""
+        print(
+            f"  {e.get('date', '')[:10]}  {e.get('url', ''):<60} "
+            f"{e.get('note', '')}{posted_note}"
+        )
     return 0
 
 
@@ -1150,6 +1439,13 @@ def main():
     )
     mark.add_argument("--url", required=True, help="the repo or story URL torn down")
     mark.add_argument("--note", default=None)
+    mark.add_argument(
+        "--posted-to",
+        dest="posted_to",
+        action="append",
+        default=None,
+        help="venue name the teardown was actually published to (repeatable)",
+    )
     mark.set_defaults(func=cmd_mark_covered)
 
     log = sub.add_parser("log", help="show recorded teardowns")

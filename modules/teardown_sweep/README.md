@@ -69,7 +69,8 @@ python teardown_sweep.py scan --days 14          # real run, 14-day HN window
 python teardown_sweep.py scan                    # real run, since last run
 python teardown_sweep.py scan --no-artefacts     # skip lane 3 (rate-limited), lanes 1-2 only
 python teardown_sweep.py mark-covered --url <repo-or-story-url> --note "published 2026-08-26"
-python teardown_sweep.py log                     # show recorded teardowns
+python teardown_sweep.py mark-covered --url <repo-or-story-url> --posted-to "Hacker News" --posted-to "r/ClaudeAI"
+python teardown_sweep.py log                     # show recorded teardowns, including where they were posted
 ```
 
 `--dry-run` makes no network or `gh` calls and writes nothing; it prints the exact queries it would run. `--no-artefacts` skips lane 3 (the rate-limited code-search lane) for a quick lanes-1/2-only run; lanes 1-2 make no `gh` calls that are rate-limited the same way, so this is the fast path when you only want frameworks and write-ups.
@@ -95,6 +96,7 @@ python teardown_sweep.py log                     # show recorded teardowns
 | `seen_retention_days` | seen-store and content-hash-store pruning horizon | `180` |
 | `default_window_days` | lane-2 first-run window | `30` |
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
+| `publish_venues` | the publish-venue registry (see "Where to publish" below) | see config.example.json |
 
 ## When the window advances (lane 2 only)
 
@@ -110,6 +112,29 @@ Lane-1 (`github`) candidates carry `repo` (owner/name) and `stars`; lane-2 (`hn`
 
 The summary line's `dropped` counts extend the same way lane by lane: `dup`/`own`/`seen`/`covered` apply across all three lanes, `stars`/`points` are lane-1/2's floors, and `fork`/`template`/`archived`/`stale`/`dup_content` are lane-3's fork-flood and near-duplicate guards (see Lane 3 above). The `TEARDOWN_SWEEP_OK` line also reports `artefacts=N repos=N`: how many raw artefact hits lane 3 built this run, across how many distinct repositories, before any filtering.
 
+Every kept candidate, in all three lanes, also carries `suggested_venues`: an ordered list of `{name, why}`, at most three entries, computed from the `publish_venues` registry. See "Where to publish" below for how it is ranked.
+
+## Where to publish
+
+Discovery again, not outreach. Once a teardown is written, `suggested_venues` on each candidate names up to three third-party communities worth a manual submission, and `why` is one factual clause for each: HN provenance ("HN audience already engaged with this subject" - a candidate lane-2 found gets Hacker News suggested regardless of topic overlap, since that audience already saw the subject), or topic overlap between the candidate's own matched keywords, query, or artefact label and the venue's configured `topics`. At most one venue per `kind` survives the ranking, so a candidate that fits three subreddits still recommends only the strongest one. Nothing here posts, drafts, or opens a form; the module computes where a submission would fit, a human does the submitting, and `mark-covered --posted-to` (below) is how the loop closes.
+
+**The subject's own repo, forum, or issue tracker is never a suggested venue.** A teardown landing in a space the subject's author controls reads as an ambush no matter the intent, so `publish_venues` can only ever hold third-party community platforms - a registry entry pointed at a `github.com` host is rejected at load time (see `FORBIDDEN_VENUE_HOSTS` in the module), not just left out of the shipped defaults.
+
+**A courtesy heads-up to the author, before or at publication, is a human call this module leaves alone.** Some authors appreciate a private note that a teardown of their work is coming; others would rather just see it land. Nothing here schedules or drafts that note - it is exactly the same kind of judgment call as which day to publish.
+
+Every registry entry ships with an `etiquette` string; read it before posting, alongside this module's own Etiquette section above.
+
+| Venue | Kind | Topics | Etiquette |
+|---|---|---|---|
+| Hacker News | `hn` | broad, agent, dev-tools | Regular submission, never Show HN - that's for the poster's own project, not a teardown of someone else's work. Keep the title neutral and factual. |
+| r/LocalLLaMA | `reddit` | local-llm, self-hosted, open-weights | Check the subreddit's self-promotion rule first. Prefer a text post summarizing the findings, with the link included, over a bare link drop. Verify visibility while logged out - shadowban removals are invisible. |
+| r/ClaudeAI | `reddit` | claude, claude-code, anthropic | Same Reddit mechanics as above. |
+| r/AI_Agents | `reddit` | agent, agentic-ai, multi-agent | Same Reddit mechanics as above. |
+| lobste.rs | `lobsters` | ai, practices | Invite-only account required. Tag accurately and skip any tag that doesn't fit - the community punishes marketing tone. |
+| dev.to | `devto` | ai, devtools, programming | A full cross-post or a canonical-URL republish both work. Set the `canonical_url` front matter so your own page keeps search authority. |
+
+Edit `publish_venues` in `config.json` to add, remove, or re-tag a venue for your own project. `manual_only` must be `true` on every entry - the loader rejects anything else, the same way it rejects a `github.com` host - so the config stays self-documenting about the one thing this module will never do.
+
 ## Recording a teardown
 
-`mark-covered --url <repo-or-story-url> [--note "..."]` appends to a ledger (`state/covered_log.jsonl`, gitignored - it is your posting history). Every future scan checks that ledger before a candidate is surfaced, the same way `thread-sweep` checks its posted-reply ledger, so a project you have already covered never resurfaces. `log` prints what is recorded.
+`mark-covered --url <repo-or-story-url> [--note "..."] [--posted-to VENUE ...]` appends to a ledger (`state/covered_log.jsonl`, gitignored - it is your posting history). Every future scan checks that ledger before a candidate is surfaced, the same way `thread-sweep` checks its posted-reply ledger, so a project you have already covered never resurfaces. `--posted-to` is optional and repeatable, for recording where the teardown actually went once it is live - it does not have to match a `suggested_venues` name, since you might publish somewhere the registry never suggested. `log` prints what is recorded, including any posted-to venues.
