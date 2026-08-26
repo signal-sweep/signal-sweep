@@ -64,5 +64,55 @@
   "per_query": 20,
   "emit_cap": 60,
   "seen_retention_days": 180,
-  "default_window_days": 30
+  "default_window_days": 30,
+  "publish_venues": [
+    {
+      "name": "Hacker News",
+      "kind": "hn",
+      "url": "https://news.ycombinator.com/submit",
+      "topics": ["broad", "agent", "dev-tools"],
+      "etiquette": "Regular submission, never Show HN. Show HN is for the poster's own project, so a teardown of someone else's work goes in as a normal link submission. Keep the title neutral and factual, no editorializing.",
+      "manual_only": true
+    },
+    {
+      "name": "r/LocalLLaMA",
+      "kind": "reddit",
+      "url": "https://www.reddit.com/r/LocalLLaMA/submit",
+      "topics": ["local-llm", "self-hosted", "open-weights"],
+      "etiquette": "Check the subreddit's self-promotion rule before posting. Prefer a text post that summarizes the findings with the link included, not a bare link drop. Shadowban removals are invisible, so verify the post is visible while logged out.",
+      "manual_only": true
+    },
+    {
+      "name": "r/ClaudeAI",
+      "kind": "reddit",
+      "url": "https://www.reddit.com/r/ClaudeAI/submit",
+      "topics": ["claude", "claude-code", "anthropic"],
+      "etiquette": "Check the subreddit's self-promotion rule before posting. Prefer a text post that summarizes the findings with the link included, not a bare link drop. Shadowban removals are invisible, so verify the post is visible while logged out.",
+      "manual_only": true
+    },
+    {
+      "name": "r/AI_Agents",
+      "kind": "reddit",
+      "url": "https://www.reddit.com/r/AI_Agents/submit",
+      "topics": ["agent", "agentic-ai", "multi-agent"],
+      "etiquette": "Check the subreddit's self-promotion rule before posting. Prefer a text post that summarizes the findings with the link included, not a bare link drop. Shadowban removals are invisible, so verify the post is visible while logged out.",
+      "manual_only": true
+    },
+    {
+      "name": "lobste.rs",
+      "kind": "lobsters",
+      "url": "https://lobste.rs/stories/new",
+      "topics": ["ai", "practices"],
+      "etiquette": "Invite-only account required. Tag accurately (ai, practices) and skip any tag that doesn't fit. The community punishes marketing tone.",
+      "manual_only": true
+    },
+    {
+      "name": "dev.to",
+      "kind": "devto",
+      "url": "https://dev.to/new",
+      "topics": ["ai", "devtools", "programming"],
+      "etiquette": "A full cross-post or a canonical-URL republish both work here. Set the canonical_url front matter so the original page keeps search authority.",
+      "manual_only": true
+    }
+  ]
 }
