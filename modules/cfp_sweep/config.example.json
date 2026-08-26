@@ -1,0 +1,38 @@
+{
+  "_comment": "Copy to config.json and edit for your project. 'topics' must be real conference-data topic names - the dataset does not have one for every subject every year ('ai' does not exist as a 2026 topic file; this example uses 'data' instead, the closest real category to AI/ML conferences, verified live 2026-08-26 - see the README for the full topic list). 'watchlist' entries are venues worth tracking directly regardless of what conference-data indexes, each best-effort scanned for open/closed state at its own cfp_url. Nothing here drafts a pitch or submits anything - scan only discovers, classifies, and records; a human drafts and submits behind the gate.",
+  "subject": {
+    "name": "your-project",
+    "url": "https://github.com/your-org/your-project"
+  },
+  "topics": ["data", "devops", "python", "javascript"],
+  "countries": [],
+  "include_online": true,
+  "watchlist": [
+    {
+      "name": "KubeCon + CloudNativeCon Europe",
+      "cfp_url": "https://events.linuxfoundation.org/kubecon-cloudnativecon-europe/program/cfp",
+      "topics": ["devops"],
+      "cadence_note": "annual, Europe edition (separate CFPs run for the North America and China editions)",
+      "format_note": "the page states its close date without a year (e.g. 'CFP Closes: Sunday, 11 October'), so best-effort scanning often reports detected_state unknown even while the CFP is open - verify the year by hand before trusting cfp_end here"
+    },
+    {
+      "name": "Berlin Buzzwords",
+      "cfp_url": "https://2026.berlinbuzzwords.de/call-for-papers",
+      "topics": ["data"],
+      "cadence_note": "annual, Berlin - search, data engineering, distributed systems"
+    },
+    {
+      "name": "React Summit",
+      "cfp_url": "https://gitnation.com/events/react-summit-2026/cfp",
+      "topics": ["javascript"],
+      "cadence_note": "annual, GitNation-run",
+      "format_note": "GitNation's CFP pages are client-rendered (a React SPA); a plain server-side fetch typically returns no scannable text at all, so detected_state comes back unknown here by design, not by bug - confirm status on the page directly"
+    }
+  ],
+  "default_cooldown_days": 180,
+  "seen_retention_days": 180,
+  "default_window_days": 30,
+  "emit_cap": 60,
+  "state_dir": "state",
+  "candidates_file": "candidates.json"
+}
