@@ -51,16 +51,17 @@ The module [README](modules/thread_sweep/README.md) covers the lanes, the fit ba
 
 ## The wider toolkit
 
-thread-sweep is one of nine modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health is inward-facing and needs neither). Reach for the others once you've felt the need.
+thread-sweep is one of ten modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health is inward-facing and needs neither). Reach for the others once you've felt the need.
 
 | Module | What it does |
 |---|---|
 | [`thread-sweep`](modules/thread_sweep/) | **Start here.** Open GitHub issues and discussions your docs already answer. |
-| [`forum-sweep`](modules/forum_sweep/) | The same job beyond GitHub: Discourse vendor forums, Hacker News, Lobsters, plus opt-in Stack Exchange, dev.to, and discovery-only Reddit lanes. |
+| [`forum-sweep`](modules/forum_sweep/) | The same job beyond GitHub: Discourse vendor forums, Hacker News, Lobsters, plus opt-in Stack Exchange, dev.to, Medium, Lemmy, and discovery-only Reddit lanes. |
 | [`mention-sweep`](modules/mention_sweep/) | Where your project is already named or misdescribed across issues, discussions, and code. The entity-first complement to thread-sweep. |
 | [`list-sweep`](modules/list_sweep/) | Curated lists and directories you could be listed in, with each one's intake mechanics (PR / issue-form / web-form) detected. |
 | [`placement-health`](modules/placement_health/) | Watches the places you're already listed and reports when an entry is dropped or a link breaks. Inward-facing, no gate. |
 | [`release-sweep`](modules/release_sweep/) | On a new release, assembles per-channel announcement material from the real diff for you to draft from. Gated per channel. |
+| [`newsletter-sweep`](modules/newsletter_sweep/) | Outlet registry for tech newsletters with submission-mechanics freshness checks and a per-outlet cooldown ledger. |
 | [`cfp-sweep`](modules/cfp_sweep/) | Conference/meetup CFP discovery matched to your topics, with submission-window detection and a per-venue cooldown ledger. |
 | [`teardown-sweep`](modules/teardown_sweep/) | Ranked discovery of published agent architectures worth a written teardown. Inward-facing, no gate. |
 | [`benchmark-sweep`](modules/benchmark_sweep/) | Threads and papers where a benchmark of your domain's properties would settle a live argument. Discovery-only demand mapping. |

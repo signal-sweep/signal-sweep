@@ -11,7 +11,7 @@ The per-module pipeline sits on `modules/sweepcore.py` — the dedup, ledger, st
 The build candidates, each with an open issue for discussion and claiming:
 
 1. ~~**list-sweep**~~ ([#2](https://github.com/signal-sweep/signal-sweep/issues/2)). **Built ([modules/list_sweep/](modules/list_sweep/))**: curated-list discovery, intake-mechanics detection (PR / issue-form / web-form / human-only), drafted entries, submission tracking; dedups against placement-health.
-2. **newsletter-sweep** ([#4](https://github.com/signal-sweep/signal-sweep/issues/4)) — outlet registry, submission windows, per-outlet pitch drafting, cooldown ledger.
+2. ~~**newsletter-sweep**~~ ([#4](https://github.com/signal-sweep/signal-sweep/issues/4)). **Built ([modules/newsletter_sweep/](modules/newsletter_sweep/))**: verified outlet registry, alive/changed/unreachable freshness checks, per-outlet cooldown ledger; pitching and submission stay human-gated, email is draft-only.
 3. **directory-sweep** — list-sweep's off-GitHub twin (tool directories / registries). Scoped to a watchlist-only classifier. A 2026 channel health-check found standalone tool-directory discovery is a weak, AI-displaced channel whose best targets are human-only (hand-flagged), so a broad crawler is not worth building.
 
 (`stack-sweep`, the former #2, is now **Not planned** — see below.)
