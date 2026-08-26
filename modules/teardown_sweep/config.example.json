@@ -1,0 +1,42 @@
+{
+  "_comment": "Copy to config.json and edit own_repos for your project(s). Everything else here is usable as-is: search_queries/topics/hn_queries are generic 'agent architecture discovery' terms, not project-specific, so a fresh checkout can scan immediately. Nothing here posts, comments, or contacts anyone - scan only discovers, scores, and ranks; a human decides what (if anything) to write about, entirely outside this tool. Read README.md's Etiquette section before writing a teardown from anything this surfaces.",
+  "own_repos": [
+    "your-org/your-repo"
+  ],
+  "search_queries": [
+    "agent workspace architecture",
+    "claude code workspace",
+    "ai agent harness memory",
+    "agent orchestration framework",
+    "personal ai agent setup"
+  ],
+  "topics": [
+    "ai-agents",
+    "agentic-ai"
+  ],
+  "hn_queries": [
+    "agent architecture",
+    "how I built my ai agent",
+    "claude code setup",
+    "agent memory system"
+  ],
+  "richness_keywords": [
+    "memory",
+    "context",
+    "hooks",
+    "subagent",
+    "provenance",
+    "verification",
+    "orchestration",
+    "eval",
+    "retrieval",
+    "guardrail"
+  ],
+  "min_stars": 50,
+  "active_within_days": 365,
+  "hn_min_points": 10,
+  "per_query": 20,
+  "emit_cap": 60,
+  "seen_retention_days": 180,
+  "default_window_days": 30
+}
