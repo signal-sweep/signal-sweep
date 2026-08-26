@@ -1,0 +1,64 @@
+{
+  "_comment": "Copy to config.json and edit for your project. PLACEHOLDER example: generic subject + the four workspace-property groups this module ships with. v1 is discovery-only — see the module README before wiring anything to this output. property_groups drive the GitHub lane (problem-language phrasings); arxiv_phrases drive the arXiv lane (shorter, paper-language phrasings) for the same four properties. own_repos excludes your own project's threads from the demand tally so your own dogfooding doesn't inflate it.",
+  "subject": {
+    "name": "your-project",
+    "url": "https://github.com/your-org/your-project"
+  },
+  "own_repos": [
+    "your-org/your-project"
+  ],
+  "min_repo_stars": 300,
+  "per_repo_cap": 4,
+  "per_query": 15,
+  "arxiv_max_per_phrase": 10,
+  "arxiv_request_delay_seconds": 3.0,
+  "emit_cap": 100,
+  "seen_retention_days": 180,
+  "default_window_days": 14,
+  "state_dir": "state",
+  "candidates_file": "candidates.json",
+  "property_groups": {
+    "memory-fidelity": [
+      "how do you test agent memory",
+      "agent memory benchmark",
+      "evaluate long term memory llm agent",
+      "agent forgets context between sessions measure"
+    ],
+    "context-retrieval": [
+      "evaluate agent context retrieval",
+      "benchmark rag agent workspace",
+      "measure context window usage agent",
+      "test agent retrieves right files"
+    ],
+    "provenance-integrity": [
+      "verify agent cited source",
+      "agent provenance tracking evaluate",
+      "trust agent output source",
+      "audit trail ai agent benchmark"
+    ],
+    "verification-oversight": [
+      "how do you verify agent work",
+      "agent output verification benchmark",
+      "eval harness ai agent workflow",
+      "measure agent error rate tasks"
+    ]
+  },
+  "arxiv_phrases": {
+    "memory-fidelity": [
+      "agent memory evaluation",
+      "long-term memory language agents"
+    ],
+    "context-retrieval": [
+      "retrieval augmented generation evaluation",
+      "long context language model benchmark"
+    ],
+    "provenance-integrity": [
+      "provenance language model agents",
+      "source attribution language models"
+    ],
+    "verification-oversight": [
+      "agent verification benchmark",
+      "human oversight language model agents"
+    ]
+  }
+}
