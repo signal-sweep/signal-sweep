@@ -1,0 +1,109 @@
+{
+  "_comment": "Copy to config.json and edit for your project. Every outlet below was live-verified 2026-08-26: real, currently-publishing newsletters, checked page by page for a public submission mechanism. Where one exists, submit_channel/submit_url_or_address name it for real (Console, Changelog News, the Cooperpress family, iOS Dev Weekly). Where none is discoverable, submit_channel is honestly 'unknown' with the homepage as the address - TLDR, TLDR AI, Hacker Newsletter, Ben's Bites, The Rundown AI, and Pointer all fall here; do not treat an 'unknown' entry as a green light to guess an address. alive_markers are short, verbatim, non-numeric phrases seen on each check_url at verification time (subscriber counts drift constantly and make poor markers). 'Dev Weekly' (devweekly.news) was investigated and found dormant since 2023, so it is excluded; iOS Dev Weekly is the real, currently-active outlet that search turned up in its place. Nothing here drafts a pitch or submits anything - scan only checks freshness, classifies, and records; a human drafts and submits behind the gate.",
+  "subject": {
+    "name": "your-project",
+    "url": "https://github.com/your-org/your-project"
+  },
+  "outlets": [
+    {
+      "name": "TLDR",
+      "url": "https://tldr.tech/",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://tldr.tech/",
+      "format_note": "No public submission mechanism found (checked the homepage, /newsletters, /blog, a live issue page, and the advertise subdomain). The only address on the site is a DMCA/copyright-notice contact, not a pitch channel - do not use it as one. Sponsorship runs separately through advertise.tldr.tech. Treat any pitch here as a cold approach.",
+      "audience_note": "Daily tech-news roundup, 8,000,000+ readers, split into 14+ topic editions (tech, ai, dev, infosec, devops, and more).",
+      "cooldown_days": 180,
+      "alive_markers": ["summaries of the most interesting stories in startups"]
+    },
+    {
+      "name": "TLDR AI",
+      "url": "https://tldr.tech/ai",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://tldr.tech/ai",
+      "format_note": "Shares TLDR's general absence of a discoverable editorial intake path. Advertising only, via advertise.tldr.tech/sponsorship-opportunities.",
+      "audience_note": "AI-focused daily edition for engineers, researchers, and technical professionals; ~1,100,000 subscribers.",
+      "cooldown_days": 180,
+      "alive_markers": ["covering AI news, research, and tools"]
+    },
+    {
+      "name": "Console",
+      "url": "https://console.dev/",
+      "submit_channel": "email",
+      "submit_url_or_address": "hello@console.dev",
+      "format_note": "Email hello@console.dev with the tool's details. They look for developer tools with self-serve signup (no sales call needed to try it), workflow integration, active maintenance, and good docs; no sponsored reviews. Roughly 2-3 tools featured per week.",
+      "audience_note": "Weekly devtools roundup for CTOs, engineering managers, and experienced developers; 30k+ subscribers, 77% with 5+ years coding experience.",
+      "check_url": "https://console.dev/selection-criteria",
+      "alive_markers": ["Submit a tool", "hello@console.dev"]
+    },
+    {
+      "name": "Changelog News",
+      "url": "https://changelog.com/news",
+      "submit_channel": "web-form",
+      "submit_url_or_address": "https://changelog.com/news/submit",
+      "format_note": "Web form: URL, title, and a short note on why it's interesting (Markdown accepted). Self-submission is explicitly welcomed - 'submitting your own work is also encouraged.' Excludes how-tos/tutorials, commercial products (an open-source project reads as in scope; a paid product does not), and podcast-episode suggestions.",
+      "audience_note": "Software newsletter and podcast, 26,000+ subscribers. Caveat as of this registry's build date: cadence has slowed sharply (issue #185 dated 2026-04-29 against a stated weekly rhythm) - confirm it is still actively publishing before investing time in a pitch.",
+      "check_url": "https://changelog.com/news/submit",
+      "alive_markers": ["Want something featured in", "if your fellow devs will find it interesting, submit it"]
+    },
+    {
+      "name": "Hacker Newsletter",
+      "url": "https://hackernewsletter.com",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://hackernewsletter.com",
+      "format_note": "No submission mechanism: content is curated from Hacker News itself rather than solicited directly, so the practical path is getting the link traction on HN. The only public intake found is a paid classified ad via an Airtable form linked from issue footers.",
+      "audience_note": "Weekly hand-curated digest of the best Hacker News articles; 70,000+ subscribers.",
+      "alive_markers": ["hand-curated the best articles from Hacker News"]
+    },
+    {
+      "name": "Cooperpress (JavaScript Weekly / Node Weekly family)",
+      "url": "https://cooperpress.com/",
+      "submit_channel": "email",
+      "submit_url_or_address": "editor@cooperpress.com",
+      "format_note": "One shared editorial address covers the whole family: JavaScript Weekly, Node Weekly, Frontend Focus, Ruby Weekly, Golang Weekly, React Status, Postgres Weekly (Python Weekly is a different publisher, not Cooperpress). No formal submission guidelines are published; the observed house format is a link plus a short blurb. Pick the one newsletter in the family that actually matches your project before pitching.",
+      "audience_note": "JavaScript Weekly alone reaches 170,000+ developers; the family together spans JS, Node, frontend, Ruby, Go, React, and Postgres.",
+      "check_url": "https://cooperpress.com/contact/",
+      "alive_markers": ["editor@cooperpress.com", "the ideal way to get a quick response is by emailing us"]
+    },
+    {
+      "name": "Ben's Bites",
+      "url": "https://bensbites.com",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://bensbites.com",
+      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are partnership and support (shanice@bensbites.com, team@bensbites.co) - paid or support, not a pitch path.",
+      "audience_note": "AI-focused newsletter on agents, tools, and builder news; 170,000+ subscribers. Note: .com is the canonical, currently-delivering domain - the older .co domain's newsletter delivery is dead, do not use it.",
+      "alive_markers": ["What I'm learning building with agents"]
+    },
+    {
+      "name": "The Rundown AI",
+      "url": "https://www.therundown.ai",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://www.therundown.ai",
+      "format_note": "No free submission path found; the only intake is a paid-advertising Typeform. support@therundown.ai is a general contact address, not a documented tips channel.",
+      "audience_note": "AI news digest; 2,000,000+ readers across AI, Tech, and Robotics editions.",
+      "alive_markers": ["Get the latest AI news, understand why it matters"]
+    },
+    {
+      "name": "Pointer",
+      "url": "https://www.pointer.io/",
+      "submit_channel": "unknown",
+      "submit_url_or_address": "https://www.pointer.io/",
+      "format_note": "No editorial submission mechanism found; the one published address (suraj@pointer.io) is for paid sponsorship. Curated reading-list format (outside writing, summarized) rather than a launch/tool-mention outlet.",
+      "audience_note": "Twice-weekly engineering-leadership reading list (leadership, management, career growth) - a narrow fit unless your project is about engineering management, not general dev tooling. ~60,000 subscribers. Caveat: the site returns HTTP 403 to non-browser fetches, so this module's freshness check will likely report it unreachable even when the site is fine - verify by hand in a real browser before trusting that status.",
+      "alive_markers": ["Essential Reading For Engineering Leaders"]
+    },
+    {
+      "name": "iOS Dev Weekly",
+      "url": "https://iosdevweekly.com/",
+      "submit_channel": "web-form",
+      "submit_url_or_address": "https://suggest.iosdevweekly.com",
+      "format_note": "Structured form: name, email, link, link origin, whether it's a blog post or a Swift library, and a short rationale. Swift/Apple-platform projects only - skip this one for anything else.",
+      "audience_note": "Weekly hand-curated links for Swift and Apple-platform developers, published since 2011 by Dave Verwer.",
+      "check_url": "https://suggest.iosdevweekly.com",
+      "alive_markers": ["Why should this link be included in iOS Dev Weekly?"]
+    }
+  ],
+  "default_cooldown_days": 90,
+  "default_window_days": 30,
+  "state_dir": "state",
+  "candidates_file": "candidates.json"
+}
