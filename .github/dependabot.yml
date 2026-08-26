@@ -1,0 +1,13 @@
+# Audit finding dd954f33: the CI toolchain is deliberately pinned, so something
+# has to surface bumps. Weekly, grouped, PRs only -- a pin bump still lands
+# through review like any change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly

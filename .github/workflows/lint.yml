@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # Pinned on purpose: ruff's lint/format defaults move between releases,
-      # and an unpinned install can turn CI red with no code change. Bump the
-      # pin deliberately in its own commit.
-      - run: pip install ruff==0.15.21
+      # Pins live in .github/requirements-ci.txt (Dependabot watches it);
+      # ruff.toml carries the explicit select, so a ruff bump can no longer
+      # change what is linted.
+      - run: pip install -r .github/requirements-ci.txt
       - run: ruff check .
       - run: ruff format --check .
 
@@ -21,12 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # 3.10 is the advertised floor (README badge + module docstrings);
-        # the newest stable catches deprecations early.
-        python-version: ["3.10", "3.13"]
+        # 3.10 is the advertised floor (README badge + module docstrings) and
+        # holds until its EOL (October 2026); the floor then moves to 3.11 in
+        # the first release after. 3.14 is the newest stable (since Oct 2025)
+        # and catches deprecations early; 3.13 stays as the middle rung.
+        python-version: ["3.10", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       # Each module is a standalone (non-package) directory, so a single
@@ -34,3 +36,28 @@ jobs:
       # and skip every per-module suite. run_tests.py discovers each directory
       # in its own subprocess so all suites gate the PR.
       - run: python modules/run_tests.py
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install -r .github/requirements-ci.txt
+      # Mirrors run_tests.py's subprocess-per-module contract: each suite runs
+      # in its own directory, data files combine at the repo root. Floor is 80
+      # against a measured 87% (2026-08-27, production code only) -- headroom,
+      # not a vanity gate.
+      - name: Run suites under coverage
+        run: |
+          set -e
+          root="$PWD"
+          for d in modules modules/*/; do
+            if ls "$d"/test_*.py > /dev/null 2>&1; then
+              (cd "$d" && COVERAGE_FILE="$root/.coverage" python -m coverage run --parallel-mode --source=. -m unittest discover -q)
+            fi
+          done
+          python -m coverage combine
+          python -m coverage report --skip-empty --omit="*/test_*,test_*"
+          python -m coverage report --omit="*/test_*,test_*" --fail-under=80 > /dev/null
