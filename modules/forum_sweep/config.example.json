@@ -68,6 +68,26 @@
         "AI_Agents",
         "LLMDevs"
       ]
+    },
+    "stackexchange": {
+      "_caveat": "DISCOVERY-ONLY and opt-in. Thin adapter (see ROADMAP.md: a dedicated stack-sweep module isn't worth building, this catches the residual long tail). The anonymous IP quota is small (roughly 300 requests/day, shared across every site queried) and a response can carry a `backoff` field demanding N seconds before the next request — this lane honours it automatically. Separately and just as load-bearing: Stack Overflow's own policy PROHIBITS AI-generated answer content, so this lane is discovery recall only — any reply a human chooses to write there must be genuinely human-authored and compliant with that policy. Leave enabled=false unless you understand both.",
+      "enabled": false,
+      "sites": [
+        "stackoverflow",
+        "ai"
+      ],
+      "min_score": 0
+    },
+    "devto": {
+      "_caveat": "DISCOVERY-ONLY and opt-in, the same gate as every other lane in this module. dev.to comment etiquette parallels the rest of the set: a reply must stand alone, and drive-by link-drops burn the account. Leave enabled=false unless you understand this.",
+      "enabled": false,
+      "tags": [
+        "ai",
+        "llm",
+        "agenticai",
+        "claudeai"
+      ],
+      "min_reactions": 3
     }
   },
   "thresholds": {

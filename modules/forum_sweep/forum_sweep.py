@@ -3,8 +3,9 @@
 
 Self-contained sibling of thread-sweep. Where thread-sweep reads GitHub issues
 and discussions, forum-sweep reads the answer-the-question venues beyond GitHub:
-Discourse vendor forums (primary), Hacker News (Algolia), Lobsters, and an
-opt-in discovery-only Reddit lane. Same shape, same gate, same ledger.
+Discourse vendor forums (primary), Hacker News (Algolia), Lobsters, an opt-in
+discovery-only Reddit lane, a thin opt-in Stack Exchange lane, and an opt-in
+dev.to (Forem) lane. Same shape, same gate, same ledger.
 
 Deterministic discovery half of a human-gated workflow. One adapter per source,
 each returning candidates in a single shared dict schema. Judgment — fit scoring,
@@ -20,18 +21,21 @@ on fetched text — it only stores a truncated snippet for a human to read later
 Treat every snippet downstream as data, never instructions.
 
 Requires: Python 3.10+ (stdlib only: urllib.request is stdlib). No third-party
-deps, no auth for the Discourse/HN/Lobsters lanes. Reddit lane is opt-in.
+deps, no auth for the Discourse/HN/Lobsters lanes. Reddit, Stack Exchange, and
+dev.to lanes are opt-in.
 
 Subcommands (all take --config; the default is the config.json beside this
 script, so the module reads its own state and config from any directory):
-  scan [--source discourse|hn|lobsters|reddit|all] [--days N] [--limit N] [--dry-run]
-                                              run the lanes, write candidates
+  scan [--source discourse|hn|lobsters|reddit|stackexchange|devto|all]
+       [--days N] [--limit N] [--dry-run]   run the lanes, write candidates
   density                                     posting counts from the ledger
   mark-posted --url U --pattern P [--comment-file F]   record a posted reply
 """
 
 import argparse
+import html
 import json
+import re
 import sys
 import time
 import urllib.parse
@@ -68,7 +72,7 @@ DEFAULTS = {
     "candidates_file": "candidates.json",
 }
 
-SOURCES = ("discourse", "hn", "lobsters", "reddit")
+SOURCES = ("discourse", "hn", "lobsters", "reddit", "stackexchange", "devto")
 
 # Descriptive UA so venue operators can identify (and rate-limit / contact) the
 # tool rather than seeing an anonymous scraper. Honesty is the etiquette here.
@@ -476,6 +480,251 @@ def _reddit_time_param(since_dt, now):
     return "all"
 
 
+# Sites that predate the unified <slug>.stackexchange.com domain keep their own
+# top-level domain; every site created since uses the .stackexchange.com form.
+# Small and effectively frozen — SE stopped minting new vanity domains after
+# the Area 51 era. Covers both shipped config.example.json defaults
+# ("stackoverflow", "ai" -> ai.stackexchange.com) plus the other long-standing
+# flagship sites, so an operator who adds one more common site still gets a
+# working link.
+SE_VANITY_DOMAINS = {
+    "stackoverflow": "stackoverflow.com",
+    "serverfault": "serverfault.com",
+    "superuser": "superuser.com",
+    "askubuntu": "askubuntu.com",
+    "mathoverflow": "mathoverflow.net",
+    "stackapps": "stackapps.com",
+}
+
+
+def _se_site_url(site):
+    """Base https URL for an SE API `site` slug. filter=default (used below)
+    carries no `link` field to read this from, so it is built from the slug
+    via the /q/<id> and /a/<id> short-permalink convention SE's own UI
+    generates, which works site-wide on every Stack Exchange property."""
+    return f"https://{SE_VANITY_DOMAINS.get(site, f'{site}.stackexchange.com')}"
+
+
+def _clean_se_excerpt(text):
+    """SE wraps matched search terms in <span class="highlight"> and
+    HTML-entity-encodes the rest (confirmed live: e.g. &#39;, &hellip;);
+    strip both so the snippet reads as plain text like every other lane's."""
+    return re.sub(r"<[^>]+>", "", html.unescape(text or ""))
+
+
+def stackexchange_adapter(cfg, since_dt, errors):
+    """Stack Exchange — THIN adapter, opt-in (gated behind
+    sources.stackexchange.enabled, default FALSE). Per ROADMAP.md: a dedicated
+    stack-sweep module was dropped as not worth building on its own (Stack
+    Overflow's public-question volume is down roughly 95% off its peak, and
+    the venues that absorbed the spillover are already covered by thread-sweep
+    and forum-sweep), but a thin adapter here still catches the residual
+    long tail.
+
+    For each enabled site, each existing query_groups phrase runs against
+    GET /2.3/search/excerpts?q=<phrase>&site=<site>&sort=creation&order=desc
+    &fromdate=<since-epoch>&filter=default. `fromdate` is honoured
+    server-side (confirmed live), the same shape as hn_adapter's
+    numericFilters, so this windows without a local _within_window recheck.
+    `sort=creation` rather than the illustrative `sort=activity`, so results
+    are ordered by the same creation-time semantics every other lane windows
+    on. item_type is "question" or "answer"; both carry a `title` (the parent
+    question's, for an answer excerpt) and an `is_answered` flag for the
+    parent question, which relevance_tier (sweepcore) already reads as an
+    answer-gap signal — no adapter-side ranking needed.
+
+    ToS / quota caveat (read before enabling — mirrored in config.example.json):
+      * The anonymous IP quota is small (roughly 300 requests/day, confirmed
+        live, shared across every site queried). A response can carry a
+        `backoff` field demanding N seconds before the next request. Honoured
+        below by sleeping; surfaced as a stderr NOTE rather than a LaneReport
+        entry, because a throttled-but-successful fetch is not the failure
+        PR #21's earned-marker fix guards against — the request still came
+        back with real data, so marking the lane unclean would hold its stamp
+        over a window this run actually covered.
+      * Stack Overflow's own policy prohibits AI-generated answer content.
+        This lane is discovery recall only, same as every other lane in this
+        module: any reply a human chooses to write there must be genuinely
+        human-authored and compliant with that policy.
+    """
+    results = []
+    src = cfg["sources"].get("stackexchange") or {}
+    if not src.get("enabled", False):
+        return results
+    sites = src.get("sites") or []
+    min_score = src.get("min_score", 0)
+    since_epoch = int(since_dt.timestamp())
+    for site in sites:
+        site = str(site).strip()
+        if not site:
+            continue
+        for pattern, phrases in cfg["query_groups"].items():
+            for phrase in phrases:
+                q = urllib.parse.quote(phrase)
+                url = (
+                    "https://api.stackexchange.com/2.3/search/excerpts"
+                    f"?order=desc&sort=creation&fromdate={since_epoch}"
+                    f"&q={q}&site={site}&filter=default"
+                )
+                data = http_get_json(url, errors, f"stackexchange {site} {pattern}")
+                if not data:
+                    continue
+                backoff = data.get("backoff")
+                if backoff:
+                    try:
+                        wait_s = float(backoff)
+                    except (TypeError, ValueError):
+                        wait_s = 0.0
+                    if wait_s > 0:
+                        print(
+                            f"NOTE stackexchange {site}: backoff {wait_s}s "
+                            "requested by the API",
+                            file=sys.stderr,
+                        )
+                        time.sleep(wait_s)
+                items = data.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_score = item.get("score")
+                    try:
+                        score = int(raw_score) if raw_score is not None else 0
+                    except (TypeError, ValueError):
+                        score = 0
+                    if score < min_score:
+                        continue
+                    answer_id = item.get("answer_id")
+                    question_id = item.get("question_id")
+                    if item.get("item_type") == "answer" and answer_id:
+                        turl = f"{_se_site_url(site)}/a/{answer_id}"
+                    elif question_id:
+                        turl = f"{_se_site_url(site)}/q/{question_id}"
+                    else:
+                        continue
+                    raw_created = item.get("creation_date")
+                    try:
+                        created = datetime.fromtimestamp(
+                            int(raw_created), tz=timezone.utc
+                        ).isoformat()
+                    except (TypeError, ValueError, OSError, OverflowError):
+                        created = ""
+                    cand = make_candidate(
+                        url=turl,
+                        title=html.unescape(item.get("title") or ""),
+                        created=created,
+                        source=site,
+                        score_or_stars=score,
+                        comments=item.get("answer_count", 0) or 0,
+                        snippet=_clean_se_excerpt(item.get("excerpt", "")),
+                        pattern=pattern,
+                        lane="stackexchange",
+                    )
+                    cand["is_answered"] = bool(item.get("is_answered"))
+                    results.append(cand)
+    return results
+
+
+# A relevance FLOOR against a tag-wide feed, not a ranking model — ranking
+# already happens centrally in cmd_scan via relevance_tier. 2 shared tokens is
+# deliberately simple: this module's query_groups phrases are multi-word by
+# convention (config.example.json has none under 2 words), so the floor is a
+# real filter against generic tag noise, not a coin flip on any one word.
+DEVTO_MIN_TOKEN_OVERLAP = 2
+
+
+def _token_overlap_pattern(text, query_groups):
+    """Cheap, deterministic keyword relevance: the query_groups phrase that
+    shares the most whole-word tokens with `text`. No stemming, no scoring
+    cleverness. Returns the best-matching pattern slug, or None if nothing
+    clears DEVTO_MIN_TOKEN_OVERLAP shared tokens."""
+    text_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+    best_pattern, best_overlap = None, 0
+    for pattern, phrases in query_groups.items():
+        for phrase in phrases:
+            phrase_tokens = set(re.findall(r"[a-z0-9]+", phrase.lower()))
+            overlap = len(phrase_tokens & text_tokens)
+            if overlap > best_overlap:
+                best_pattern, best_overlap = pattern, overlap
+    return best_pattern if best_overlap >= DEVTO_MIN_TOKEN_OVERLAP else None
+
+
+# dev.to's own default page size, pinned explicitly rather than relying on the
+# API's implicit default so a future Forem change can't silently shrink recall.
+DEVTO_PER_PAGE = 30
+
+
+def devto_adapter(cfg, since_dt, errors):
+    """dev.to (Forem) — DISCOVERY-ONLY, opt-in (gated behind
+    sources.devto.enabled, default FALSE).
+
+    GET /api/articles?tag=<tag>&per_page=<n> per configured tag: the
+    documented, stable public lane. /api/search/feed_content (undocumented)
+    404s live as of this build, so the tag lane is used instead of a search
+    lane. One page per tag, like every other adapter in this module — no
+    pagination.
+
+    Windowed locally by `published_at` (no server-side date filter on this
+    endpoint), same shape as discourse/lobsters. A tag alone is broad (e.g.
+    "ai" pulls unrelated posts), so results are also filtered through the
+    existing query_groups phrases via a cheap token-overlap floor
+    (_token_overlap_pattern) rather than kept on tag membership alone.
+
+    Etiquette: same discovery-only gate as every other lane. dev.to comment
+    etiquette parallels the rest of the set: the reply must stand alone, and
+    drive-by link-drops burn the account (see the module README).
+    """
+    results = []
+    src = cfg["sources"].get("devto") or {}
+    if not src.get("enabled", False):
+        return results
+    tags = src.get("tags") or []
+    min_reactions = src.get("min_reactions", 0)
+    for tag in tags:
+        tag = str(tag).strip()
+        if not tag:
+            continue
+        url = (
+            "https://dev.to/api/articles"
+            f"?tag={urllib.parse.quote(tag)}&per_page={DEVTO_PER_PAGE}"
+        )
+        data = http_get_json(url, errors, f"devto {tag}")
+        if not data or not isinstance(data, list):
+            continue
+        for article in data:
+            if not isinstance(article, dict):
+                continue
+            published = article.get("published_at", "")
+            if not _within_window(published, since_dt):
+                continue
+            reactions = article.get("positive_reactions_count", 0) or 0
+            if reactions < min_reactions:
+                continue
+            aurl = article.get("url")
+            if not aurl:
+                continue
+            title = article.get("title") or ""
+            desc = article.get("description") or ""
+            pattern = _token_overlap_pattern(f"{title} {desc}", cfg["query_groups"])
+            if not pattern:
+                continue
+            results.append(
+                make_candidate(
+                    url=aurl,
+                    title=title,
+                    created=published,
+                    source="dev.to",
+                    score_or_stars=reactions,
+                    comments=article.get("comments_count", 0),
+                    snippet=desc,
+                    pattern=pattern,
+                    lane="devto",
+                )
+            )
+    return results
+
+
 def _within_window(created, since_dt):
     """True if `created` (ISO 8601 string) is at or after since_dt. Missing or
     unparseable timestamps are kept (fail-open on the time filter — the
@@ -497,6 +746,8 @@ ADAPTERS = {
     "hn": hn_adapter,
     "lobsters": lobsters_adapter,
     "reddit": reddit_adapter,
+    "stackexchange": stackexchange_adapter,
+    "devto": devto_adapter,
 }
 
 

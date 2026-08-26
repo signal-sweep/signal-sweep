@@ -16,7 +16,7 @@ Every module in this repo runs the same five stages, and forum-sweep is no excep
 
 The script owns the first stage and the last. The three in the middle are human. That split is the point.
 
-## The four source lanes
+## The six source lanes
 
 One adapter per source, all returning the same candidate schema (`url`, `title`, `created`, `source`, `score_or_stars`, `comments`, `snippet`, `pattern`, `lane`). Pick lanes with `--source` (default `all`). Each is configured under `sources` in `config.json`:
 
@@ -43,6 +43,22 @@ One adapter per source, all returning the same candidate schema (`url`, `title`,
 ```json
 "reddit": { "enabled": false, "subs": ["LocalLLaMA", "ClaudeAI", "AI_Agents", "LLMDevs"] }
 ```
+
+**Stack Exchange (opt-in, thin adapter).** Off by default. [ROADMAP.md](../../ROADMAP.md) explains why a dedicated `stack-sweep` module isn't planned — Stack Overflow's public-question volume is down roughly 95% off its peak, and the venues that absorbed the spillover are already covered by thread-sweep and forum-sweep — but a thin adapter here still catches the residual long tail. Each configured `site` (the API's short slug, e.g. `stackoverflow`, `ai` for ai.stackexchange.com — not the hostname) runs every query phrase against `search/excerpts`, windowed server-side by `fromdate` and floored by `min_score`. Candidates surface both questions and answers; the `is_answered` field on each feeds the same unanswered-preferred ranking the other lanes get for free.
+
+```json
+"stackexchange": { "enabled": false, "sites": ["stackoverflow", "ai"], "min_score": 0 }
+```
+
+Two things to read before enabling: the anonymous IP quota is small (roughly 300 requests/day, shared across every site queried), and a response can carry a `backoff` field demanding N seconds before the next request — this lane honours it automatically and prints a `NOTE` on stderr when it fires, without holding the lane's window (the fetch that carried the hint still succeeded). Separately, and non-negotiably: **Stack Overflow's own policy prohibits AI-generated answer content.** This lane is discovery recall only, same as every lane in this module — any reply a human chooses to write there must be genuinely human-authored and policy-compliant.
+
+**dev.to / Forem (opt-in, discovery-only).** Off by default. `GET /api/articles?tag=<tag>` per configured tag — the documented, stable public lane (dev.to's keyword-search endpoint is undocumented and returned 404 during this build, so tag-based discovery is what's wired up). A tag alone is broad, so results are also floored by `min_reactions` and filtered through the existing `query_groups` phrases via a cheap token-overlap check before they reach you.
+
+```json
+"devto": { "enabled": false, "tags": ["ai", "llm", "agenticai", "claudeai"], "min_reactions": 3 }
+```
+
+dev.to comment etiquette parallels the rest of this set: the reply must stand alone, and drive-by link-drops burn the account.
 
 Filters run before anything reaches you: a per-source cap so one busy instance can't flood the digest, everything previously surfaced excluded (seen-store), everything previously *answered* excluded forever (ledger). The time window scales input to what is new since the last run.
 
@@ -81,6 +97,14 @@ Reddit is **disabled by default, discovery-only, manual.** Two reasons. First, s
 
 Posting on Lobsters is invite-gated; you cannot self-register. And the site enforces a hard **under-25% self-promotion ceiling** (across your whole history, fewer than one in four of your submissions may point at your own properties), plus active anti-AI-slop moderation. Fold the `ai` and `vibecoding` tags into discovery, hand-post rarely, and keep your linkless-to-self-link ratio comfortably inside the ceiling.
 
+### Stack Exchange: AI-generated-content ban + a small quota
+
+Two facts, both load-bearing. First, the anonymous IP quota this lane uses is small (roughly 300 requests/day, shared across every configured site) and can shrink further mid-run: a response can carry a `backoff` field telling you to wait N seconds before the next request, which this lane honours automatically. Second, and non-negotiable: **Stack Overflow's own policy prohibits AI-generated answer content.** This lane finds threads; it does not draft or post to them. Any reply a human posts on Stack Overflow or any Stack Exchange site must be genuinely their own writing and compliant with that site's policy, full stop — there is no assistant-drafted shortcut here the way there might be on a venue without that rule.
+
+### dev.to: same gate, ordinary community norms
+
+dev.to carries no unusual structural gate (no invite wall, no domain-level enforcement, no shadowban risk), but the module's universal rule still applies in full: the reply must stand alone, and drive-by link-drops burn the account just as fast as anywhere else. Treat it as a normal, moderate-trust venue, not a free pass because the mechanics are lighter.
+
 The self-reference ratio is the real governor everywhere. Venues differ in their rules; the universal defence is the same: mix genuinely-helpful linkless answers in over time so the account never reads as ~100% self-link. **Record every post** with `mark-posted`. The ledger is what guarantees you never answer the same thread twice (modulo the Reddit-shadowban caveat above), and `density` keeps your recent posting count visible so restraint stays honest.
 
 ## Security note
@@ -111,6 +135,12 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 | `sources.lobsters.tags` | Lobsters tags to pull | `[]` |
 | `sources.reddit.enabled` | run the opt-in discovery-only Reddit lane | `false` |
 | `sources.reddit.subs` | subreddits to search when enabled | `[]` |
+| `sources.stackexchange.enabled` | run the opt-in, thin Stack Exchange lane | `false` |
+| `sources.stackexchange.sites` | SE API site slugs to search (e.g. `stackoverflow`, `ai` — not hostnames) | `[]` |
+| `sources.stackexchange.min_score` | drop SE hits below this score | `0` |
+| `sources.devto.enabled` | run the opt-in dev.to (Forem) lane | `false` |
+| `sources.devto.tags` | dev.to tags to pull articles from | `[]` |
+| `sources.devto.min_reactions` | drop dev.to articles below this reaction count | `3` |
 | `thresholds.per_source_cap` | max candidates per instance/site per scan | `4` |
 | `thresholds.hn_min_points` | drop HN hits below this point count | `2` |
 | `emit_cap` | recall ceiling on emitted candidates | `100` |
@@ -121,7 +151,7 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 
 State lives in `state/forum_sweep_state.json` (a per-source last_run map + seen) and `state/forum_sweep_log.jsonl` (the posted ledger). Both are gitignored: the ledger is your posting history; never commit it.
 
-Each source carries its own `last_run`, so `--source hn` advances only the HN window — the three lanes that did not run keep theirs and lose nothing published in the gap. A state file from an older version with one shared `last_run` is migrated on the next scan by seeding every source with that value.
+Each source carries its own `last_run`, so `--source hn` advances only the HN window — the other lanes that did not run keep theirs and lose nothing published in the gap. A state file from an older version with one shared `last_run` is migrated on the next scan by seeding every source with that value.
 
 A lane earns a new `last_run` only by completing a fetch cleanly, because being asked to scan is not proof the scan happened. A request that came back holding nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a request that failed, an adapter that crashed, or a lane that never made a request at all because the source is off or has no instances or tags configured. The next run then re-covers that stretch instead of stepping over it. Partial failure counts as failure. If one Discourse instance 503s while the others answer, the whole lane holds, and the seen-store keeps the already-surfaced threads out of the re-scan. Held lanes are named on stderr and in the digest's `sources_held`.
 
