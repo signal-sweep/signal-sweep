@@ -1127,6 +1127,996 @@ class MarkCoveredLogTests(unittest.TestCase):
         self.assertIn("https://ok", buf.getvalue())
 
 
+# --- lane 3: artefact code search -------------------------------------------
+
+
+class ArtefactConfigTests(unittest.TestCase):
+    def _write(self, tmp, cfg):
+        p = Path(tmp) / "config.json"
+        p.write_text(json.dumps(cfg), encoding="utf-8")
+        return str(p)
+
+    def test_artefact_queries_must_be_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                ts.load_config(
+                    self._write(tmp, {"own_repos": [], "artefact_queries": "nope"})
+                )
+
+    def test_pattern_signals_must_be_a_dict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                ts.load_config(
+                    self._write(tmp, {"own_repos": [], "pattern_signals": ["nope"]})
+                )
+
+    def test_artefact_defaults_are_filled_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = ts.load_config(self._write(tmp, {"own_repos": []}))
+        self.assertEqual(cfg["artefact_min_stars"], 20)
+        self.assertEqual(cfg["artefact_pages_per_query"], 1)
+        self.assertEqual(len(cfg["artefact_queries"]), 5)
+        self.assertEqual(len(cfg["pattern_signals"]), 15)
+        self.assertIn("p01", cfg["pattern_signals"])
+        self.assertIn("p15", cfg["pattern_signals"])
+
+
+class DedupKeyTests(unittest.TestCase):
+    def test_github_lane_keys_by_lowercased_repo(self):
+        cand = {"lane": "github", "repo": "Owner/Repo", "url": "https://x"}
+        self.assertEqual(ts._dedup_key(cand), "owner/repo")
+
+    def test_artefact_lane_keys_by_lowercased_repo(self):
+        cand = {"lane": "artefact", "repo": "Owner/Repo", "url": "https://x"}
+        self.assertEqual(ts._dedup_key(cand), "owner/repo")
+
+    def test_hn_lane_keys_by_url(self):
+        cand = {"lane": "hn", "repo": "", "url": "https://example.com/post"}
+        self.assertEqual(ts._dedup_key(cand), "https://example.com/post")
+
+
+class ContentPrefixHashTests(unittest.TestCase):
+    def test_identical_text_hashes_identically(self):
+        self.assertEqual(
+            ts.content_prefix_hash("hello world"), ts.content_prefix_hash("hello world")
+        )
+
+    def test_whitespace_differences_within_prefix_hash_identically(self):
+        a = ts.content_prefix_hash("hello    world\n\n\tfoo")
+        b = ts.content_prefix_hash("hello world foo")
+        self.assertEqual(a, b)
+
+    def test_content_differing_past_the_prefix_still_hashes_identically(self):
+        base = "x" * 2048
+        a = ts.content_prefix_hash(base + "one tail")
+        b = ts.content_prefix_hash(base + "a totally different tail")
+        self.assertEqual(a, b)
+
+    def test_different_content_hashes_differently(self):
+        self.assertNotEqual(
+            ts.content_prefix_hash("alpha workspace"),
+            ts.content_prefix_hash("beta workspace"),
+        )
+
+    def test_none_text_does_not_raise_and_matches_empty(self):
+        self.assertEqual(ts.content_prefix_hash(None), ts.content_prefix_hash(""))
+
+
+class PatternDensityScoringTests(unittest.TestCase):
+    def test_zero_present_scores_zero(self):
+        self.assertEqual(ts.score_pattern_density(0), 0)
+
+    def test_peak_band_scores_max(self):
+        for n in range(ts.PATTERN_PEAK_LOW, ts.PATTERN_PEAK_HIGH + 1):
+            self.assertEqual(ts.score_pattern_density(n), ts.PATTERN_PEAK_SCORE)
+
+    def test_fifteen_present_scores_zero(self):
+        self.assertEqual(ts.score_pattern_density(15), 0)
+
+    def test_all_fifteen_scores_below_a_six_pattern_artefact(self):
+        self.assertLess(ts.score_pattern_density(15), ts.score_pattern_density(6))
+
+    def test_score_ramps_up_toward_the_peak(self):
+        self.assertLess(ts.score_pattern_density(1), ts.score_pattern_density(2))
+        self.assertLess(ts.score_pattern_density(2), ts.score_pattern_density(3))
+        self.assertLess(ts.score_pattern_density(3), ts.score_pattern_density(4))
+
+    def test_score_ramps_down_after_the_peak(self):
+        self.assertGreater(ts.score_pattern_density(9), ts.score_pattern_density(10))
+        self.assertGreater(ts.score_pattern_density(10), ts.score_pattern_density(11))
+
+    def test_score_never_negative(self):
+        for n in range(30):
+            self.assertGreaterEqual(ts.score_pattern_density(n), 0)
+
+
+class ArtefactPatternMatchingTests(unittest.TestCase):
+    SIGNALS = {
+        "p01": ["alpha indicator"],
+        "p02": ["beta indicator"],
+        "p03": ["gamma indicator"],
+    }
+
+    def test_empty_artefact_scores_zero(self):
+        present, absent, score = ts.score_artefact_patterns("", self.SIGNALS)
+        self.assertEqual(present, [])
+        self.assertEqual(absent, ["p01", "p02", "p03"])
+        self.assertEqual(score, 0)
+
+    def test_none_text_scores_zero(self):
+        present, _absent, score = ts.score_artefact_patterns(None, self.SIGNALS)
+        self.assertEqual(present, [])
+        self.assertEqual(score, 0)
+
+    def test_case_insensitive_indicator_match(self):
+        present, _absent, _score = ts.score_artefact_patterns(
+            "This mentions Alpha Indicator right here.", self.SIGNALS
+        )
+        self.assertIn("p01", present)
+
+    def test_present_and_absent_partition_all_labels(self):
+        present, absent, _score = ts.score_artefact_patterns(
+            "alpha indicator", self.SIGNALS
+        )
+        self.assertEqual(sorted(present + absent), ["p01", "p02", "p03"])
+
+    def test_one_indicator_hit_is_enough_to_mark_a_label_present(self):
+        signals = {"p01": ["one", "two", "three"]}
+        present, _absent, _score = ts.score_artefact_patterns(
+            "contains two only", signals
+        )
+        self.assertEqual(present, ["p01"])
+
+
+class ArtefactTierTests(unittest.TestCase):
+    def test_peak_score_is_high(self):
+        self.assertEqual(ts.artefact_tier(10), "high")
+
+    def test_zero_is_low(self):
+        self.assertEqual(ts.artefact_tier(0), "low")
+
+    def test_mid_score_is_med(self):
+        self.assertEqual(ts.artefact_tier(4), "med")
+
+    def test_boundary_eight_is_high(self):
+        self.assertEqual(ts.artefact_tier(8), "high")
+
+    def test_boundary_seven_is_med(self):
+        self.assertEqual(ts.artefact_tier(7), "med")
+
+    def test_boundary_three_is_med(self):
+        self.assertEqual(ts.artefact_tier(3), "med")
+
+    def test_boundary_two_is_low(self):
+        self.assertEqual(ts.artefact_tier(2), "low")
+
+
+class SearchCodePageTests(unittest.TestCase):
+    def test_parses_items_list(self):
+        payload = {"total_count": 1, "items": [{"path": "CLAUDE.md"}]}
+        with mock.patch.object(ts, "gh", return_value=(payload, None)):
+            items, err = ts.search_code_page("q", 1, 30)
+        self.assertIsNone(err)
+        self.assertEqual(items, [{"path": "CLAUDE.md"}])
+
+    def test_null_stargazers_in_embedded_repository_does_not_break_parsing(self):
+        # The code-search item's embedded `repository` sub-object never
+        # carries stargazers_count at all (live-verified) - a payload that
+        # includes a null one anyway (defensive fixture) must not raise.
+        payload = {
+            "items": [
+                {
+                    "path": "CLAUDE.md",
+                    "repository": {"full_name": "a/b", "stargazers_count": None},
+                }
+            ]
+        }
+        with mock.patch.object(ts, "gh", return_value=(payload, None)):
+            items, err = ts.search_code_page("q", 1, 30)
+        self.assertIsNone(err)
+        self.assertIsNone(items[0]["repository"]["stargazers_count"])
+
+    def test_gh_error_is_returned_not_raised(self):
+        with mock.patch.object(ts, "gh", return_value=(None, "boom")):
+            items, err = ts.search_code_page("q", 1, 30)
+        self.assertEqual(items, [])
+        self.assertEqual(err, "boom")
+
+    def test_missing_items_key_is_a_soft_error(self):
+        with mock.patch.object(ts, "gh", return_value=({"total_count": 0}, None)):
+            items, err = ts.search_code_page("q", 1, 30)
+        self.assertEqual(items, [])
+        self.assertIn("no usable result payload", err)
+
+    def test_non_dict_payload_is_a_soft_error(self):
+        with mock.patch.object(ts, "gh", return_value=("", None)):
+            items, err = ts.search_code_page("q", 1, 30)
+        self.assertEqual(items, [])
+        self.assertIn("no usable result payload", err)
+
+    def test_query_page_and_per_page_are_in_the_request(self):
+        seen = {}
+
+        def _fake_gh(args):
+            seen["args"] = args
+            return {"items": []}, None
+
+        with mock.patch.object(ts, "gh", side_effect=_fake_gh):
+            ts.search_code_page("filename:CLAUDE.md size:>4000", 1, 30)
+        endpoint = seen["args"][1]
+        self.assertTrue(endpoint.startswith("search/code?q="))
+        self.assertIn("page=1", endpoint)
+        self.assertIn("per_page=30", endpoint)
+
+
+class FetchRepoMetaTests(unittest.TestCase):
+    def test_returns_metadata_dict(self):
+        data = {"full_name": "a/b", "stargazers_count": 5, "fork": False}
+        with mock.patch.object(ts, "gh", return_value=(data, None)):
+            self.assertEqual(ts.fetch_repo_meta("a/b"), data)
+
+    def test_gh_error_returns_none(self):
+        with mock.patch.object(ts, "gh", return_value=(None, "404 Not Found")):
+            self.assertIsNone(ts.fetch_repo_meta("a/b"))
+
+    def test_non_dict_payload_returns_none(self):
+        with mock.patch.object(ts, "gh", return_value=("oops", None)):
+            self.assertIsNone(ts.fetch_repo_meta("a/b"))
+
+
+class FetchArtefactContentTests(unittest.TestCase):
+    def test_decodes_base64_content(self):
+        import base64
+
+        raw = base64.b64encode(b"# workspace notes").decode()
+        with mock.patch.object(ts, "gh", return_value=({"content": raw}, None)):
+            self.assertEqual(
+                ts.fetch_artefact_content("a/b", "CLAUDE.md"), "# workspace notes"
+            )
+
+    def test_gh_error_returns_empty_string(self):
+        with mock.patch.object(ts, "gh", return_value=(None, "404 Not Found")):
+            self.assertEqual(ts.fetch_artefact_content("a/b", "CLAUDE.md"), "")
+
+    def test_malformed_base64_returns_empty_string_not_raise(self):
+        with mock.patch.object(
+            ts, "gh", return_value=({"content": "!!!not-base64!!!"}, None)
+        ):
+            self.assertEqual(ts.fetch_artefact_content("a/b", "CLAUDE.md"), "")
+
+    def test_path_is_included_in_the_contents_call(self):
+        seen = {}
+
+        def _fake_gh(args):
+            seen["args"] = args
+            return {"content": ""}, None
+
+        with mock.patch.object(ts, "gh", side_effect=_fake_gh):
+            ts.fetch_artefact_content("a/b", ".cursor/rules/general.md")
+        self.assertIn("contents/.cursor/rules/general.md", seen["args"][1])
+
+
+class BuildArtefactCandidateTests(unittest.TestCase):
+    def _hit(
+        self,
+        repo="a/b",
+        path="CLAUDE.md",
+        html_url="https://github.com/a/b/blob/x/CLAUDE.md",
+    ):
+        return {"path": path, "html_url": html_url, "repository": {"full_name": repo}}
+
+    def _meta(self, **overrides):
+        base = {
+            "stargazers_count": 100,
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+        }
+        base.update(overrides)
+        return base
+
+    def _build(self, hit, label="claude-md", meta="__default__", content="", cfg=None):
+        cfg = cfg or _full_config()
+        now = datetime.now(timezone.utc)
+        if meta == "__default__":
+            meta = self._meta()
+        with (
+            mock.patch.object(ts, "fetch_repo_meta", return_value=meta),
+            mock.patch.object(ts, "fetch_artefact_content", return_value=content),
+        ):
+            return ts.build_artefact_candidate(hit, label, cfg, now, {}, {})
+
+    def test_missing_repository_full_name_is_skipped(self):
+        self.assertIsNone(self._build({"path": "CLAUDE.md", "repository": {}}))
+
+    def test_missing_path_is_skipped(self):
+        self.assertIsNone(self._build({"path": "", "repository": {"full_name": "a/b"}}))
+
+    def test_metadata_fetch_failure_skips_candidate(self):
+        self.assertIsNone(self._build(self._hit(), meta=None))
+
+    def test_null_stargazers_count_becomes_zero_not_a_crash(self):
+        meta = self._meta(stargazers_count=None, pushed_at="")
+        cand = self._build(self._hit(), meta=meta)
+        self.assertEqual(cand["stars"], 0)
+
+    def test_candidate_shape(self):
+        cand = self._build(
+            self._hit(), content="memory index and bitwarden vault notes"
+        )
+        for field in (
+            "lane",
+            "repo",
+            "url",
+            "stars",
+            "pushed_at",
+            "fork",
+            "is_template",
+            "archived",
+            "artefact_label",
+            "artefact_path",
+            "artefact_url",
+            "patterns_present",
+            "patterns_absent",
+            "pattern_score",
+            "richness_score",
+            "content_hash",
+            "tier",
+            "why",
+        ):
+            self.assertIn(field, cand)
+        self.assertEqual(cand["lane"], "artefact")
+
+    def test_pattern_hits_recorded(self):
+        cfg = _full_config()
+        cfg["pattern_signals"] = {"p05": ["memory index"], "p06": ["bitwarden"]}
+        cand = self._build(
+            self._hit(), content="uses a memory index and bitwarden vault", cfg=cfg
+        )
+        self.assertIn("p05", cand["patterns_present"])
+        self.assertIn("p06", cand["patterns_present"])
+
+    def test_fork_flag_carried_through(self):
+        cand = self._build(self._hit(), meta=self._meta(fork=True))
+        self.assertTrue(cand["fork"])
+
+    def test_url_is_the_repo_url_not_the_artefact_url(self):
+        cand = self._build(
+            self._hit(repo="a/b", html_url="https://github.com/a/b/blob/x/CLAUDE.md")
+        )
+        self.assertEqual(cand["url"], "https://github.com/a/b")
+        self.assertEqual(
+            cand["artefact_url"], "https://github.com/a/b/blob/x/CLAUDE.md"
+        )
+
+    def test_metadata_and_content_cached_per_repo_and_path(self):
+        hit = self._hit()
+        cfg = _full_config()
+        now = datetime.now(timezone.utc)
+        meta_cache, content_cache = {}, {}
+        with (
+            mock.patch.object(
+                ts, "fetch_repo_meta", return_value=self._meta()
+            ) as m_meta,
+            mock.patch.object(
+                ts, "fetch_artefact_content", return_value=""
+            ) as m_content,
+        ):
+            ts.build_artefact_candidate(
+                hit, "claude-md", cfg, now, meta_cache, content_cache
+            )
+            ts.build_artefact_candidate(
+                hit, "claude-md", cfg, now, meta_cache, content_cache
+            )
+        m_meta.assert_called_once_with("a/b")
+        m_content.assert_called_once_with("a/b", "CLAUDE.md")
+
+
+class ArtefactLaneTests(unittest.TestCase):
+    def _cfg(self, queries=None, pages=1):
+        cfg = _full_config()
+        cfg["artefact_queries"] = (
+            queries
+            if queries is not None
+            else [{"label": "claude-md", "query": "filename:CLAUDE.md size:>4000"}]
+        )
+        cfg["artefact_pages_per_query"] = pages
+        return cfg
+
+    def test_no_sleep_before_the_first_call(self):
+        cfg = self._cfg()
+        with (
+            mock.patch.object(ts, "search_code_page", return_value=([], None)),
+            mock.patch.object(ts.time, "sleep") as m_sleep,
+        ):
+            ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+        m_sleep.assert_not_called()
+
+    def test_sleeps_between_successive_calls(self):
+        cfg = self._cfg(
+            queries=[{"label": "a", "query": "qa"}, {"label": "b", "query": "qb"}]
+        )
+        with (
+            mock.patch.object(ts, "search_code_page", return_value=([], None)),
+            mock.patch.object(ts.time, "sleep") as m_sleep,
+        ):
+            ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+        m_sleep.assert_called_once_with(ts.ARTEFACT_SLEEP_SECONDS)
+
+    def test_builds_candidates_from_hits(self):
+        cfg = self._cfg()
+        hit = {"path": "CLAUDE.md", "html_url": "x", "repository": {"full_name": "a/b"}}
+        meta = {
+            "stargazers_count": 100,
+            "pushed_at": "",
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+        }
+        with (
+            mock.patch.object(ts, "search_code_page", return_value=([hit], None)),
+            mock.patch.object(ts, "fetch_repo_meta", return_value=meta),
+            mock.patch.object(ts, "fetch_artefact_content", return_value=""),
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(raw[0]["repo"], "a/b")
+
+    def test_non_rate_limit_error_is_recorded_and_continues(self):
+        cfg = self._cfg(
+            queries=[{"label": "a", "query": "qa"}, {"label": "b", "query": "qb"}]
+        )
+        calls = []
+
+        def _fake(query, page, per_page):
+            calls.append(query)
+            return [], "network boom"
+
+        advisory = []
+        with (
+            mock.patch.object(ts, "search_code_page", side_effect=_fake),
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), advisory)
+        self.assertEqual(raw, [])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("boom" in e for e in advisory))
+
+    def test_rate_limit_403_stops_the_lane_early(self):
+        cfg = self._cfg(
+            queries=[{"label": "a", "query": "qa"}, {"label": "b", "query": "qb"}]
+        )
+        calls = []
+
+        def _fake(query, page, per_page):
+            calls.append(query)
+            return [], "gh: API rate limit exceeded (HTTP 403)"
+
+        advisory = []
+        with (
+            mock.patch.object(ts, "search_code_page", side_effect=_fake),
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), advisory)
+        self.assertEqual(raw, [])
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(any("rate limit" in e for e in advisory))
+
+    def test_label_falls_back_to_query_when_missing(self):
+        cfg = self._cfg(queries=[{"query": "filename:CLAUDE.md"}])
+        hit = {"path": "CLAUDE.md", "html_url": "x", "repository": {"full_name": "a/b"}}
+        meta = {
+            "stargazers_count": 1,
+            "pushed_at": "",
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+        }
+        with (
+            mock.patch.object(ts, "search_code_page", return_value=([hit], None)),
+            mock.patch.object(ts, "fetch_repo_meta", return_value=meta),
+            mock.patch.object(ts, "fetch_artefact_content", return_value=""),
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+        self.assertEqual(raw[0]["artefact_label"], "filename:CLAUDE.md")
+
+    def test_malformed_query_entry_is_skipped(self):
+        cfg = self._cfg(queries=["not-a-dict", {"label": "x"}])
+        with (
+            mock.patch.object(ts, "search_code_page") as m_search,
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+        self.assertEqual(raw, [])
+        m_search.assert_not_called()
+
+
+class ArtefactDropReasonTests(unittest.TestCase):
+    def _cand(self, **overrides):
+        base = {
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+            "stars": 100,
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+            "content_hash": "deadbeef",
+        }
+        base.update(overrides)
+        return base
+
+    def _cfg(self, **overrides):
+        cfg = _full_config()
+        cfg.update(overrides)
+        return cfg
+
+    def test_fork_is_dropped(self):
+        cand = self._cand(fork=True)
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "fork")
+
+    def test_template_is_dropped(self):
+        cand = self._cand(is_template=True)
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "template")
+
+    def test_archived_is_dropped(self):
+        cand = self._cand(archived=True)
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "archived")
+
+    def test_below_artefact_star_floor_is_dropped(self):
+        cfg = self._cfg(artefact_min_stars=50)
+        cand = self._cand(stars=10)
+        reason = ts._artefact_drop_reason(
+            cand, cfg, datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "stars")
+
+    def test_stale_pushed_at_is_dropped(self):
+        cfg = self._cfg(active_within_days=30)
+        old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+        cand = self._cand(pushed_at=old)
+        reason = ts._artefact_drop_reason(
+            cand, cfg, datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "stale")
+
+    def test_missing_pushed_at_does_not_trigger_stale(self):
+        cand = self._cand(pushed_at="")
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), set(), {}
+        )
+        self.assertIsNone(reason)
+
+    def test_dup_content_against_this_run_batch(self):
+        cand = self._cand(content_hash="abc123")
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), {"abc123"}, {}
+        )
+        self.assertEqual(reason, "dup_content")
+
+    def test_dup_content_against_prior_state(self):
+        cand = self._cand(content_hash="abc123")
+        reason = ts._artefact_drop_reason(
+            cand,
+            self._cfg(),
+            datetime.now(timezone.utc),
+            set(),
+            {"abc123": "2020-01-01"},
+        )
+        self.assertEqual(reason, "dup_content")
+
+    def test_clean_candidate_is_not_dropped(self):
+        cand = self._cand()
+        reason = ts._artefact_drop_reason(
+            cand, self._cfg(), datetime.now(timezone.utc), set(), {}
+        )
+        self.assertIsNone(reason)
+
+    def test_fork_checked_before_stars(self):
+        cfg = self._cfg(artefact_min_stars=1000)
+        cand = self._cand(fork=True, stars=1)
+        reason = ts._artefact_drop_reason(
+            cand, cfg, datetime.now(timezone.utc), set(), {}
+        )
+        self.assertEqual(reason, "fork")
+
+
+class ArtefactScanIntegrationTests(unittest.TestCase):
+    """End-to-end scan with lane 3 exercised (no_artefacts=False): gh is
+    mocked at the search_code_page / fetch_repo_meta / fetch_artefact_content
+    boundary, same altitude ScanIntegrationTests mocks lanes 1-2 at, so the
+    dedup/drop-reason/digest wiring in cmd_scan is exercised for real."""
+
+    def _hit(self, repo, path="CLAUDE.md"):
+        return {
+            "path": path,
+            "html_url": f"https://github.com/{repo}/blob/x/{path}",
+            "repository": {"full_name": repo},
+        }
+
+    def _meta(self, **overrides):
+        base = {
+            "stargazers_count": 100,
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+            "fork": False,
+            "is_template": False,
+            "archived": False,
+        }
+        base.update(overrides)
+        return base
+
+    def _run_scan(
+        self,
+        tmp,
+        *,
+        hits=None,
+        meta_by_repo=None,
+        content_by_repo=None,
+        seen=None,
+        content_hashes=None,
+        own_repos=None,
+        artefact_min_stars=None,
+        active_within_days=None,
+        no_artefacts=False,
+    ):
+        cfg = _full_config()
+        cfg["state_dir"] = str(Path(tmp) / "state")
+        cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+        cfg["search_queries"] = []
+        cfg["topics"] = []
+        cfg["hn_queries"] = []
+        cfg["artefact_queries"] = [
+            {"label": "claude-md", "query": "filename:CLAUDE.md size:>4000"}
+        ]
+        if own_repos is not None:
+            cfg["own_repos"] = own_repos
+        if artefact_min_stars is not None:
+            cfg["artefact_min_stars"] = artefact_min_stars
+        if active_within_days is not None:
+            cfg["active_within_days"] = active_within_days
+
+        state_dir = Path(cfg["state_dir"])
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_obj = {
+            "last_run": None,
+            "seen": seen or {},
+            "content_hashes": content_hashes or {},
+        }
+        (state_dir / "teardown_state.json").write_text(
+            json.dumps(state_obj), encoding="utf-8"
+        )
+
+        meta_by_repo = meta_by_repo or {}
+        content_by_repo = content_by_repo or {}
+
+        def _search_code_page(query, page, per_page):
+            return (hits or []) if page == 1 else [], None
+
+        def _fetch_repo_meta(full_name):
+            return meta_by_repo.get(full_name)
+
+        def _fetch_artefact_content(full_name, path):
+            return content_by_repo.get(full_name, "")
+
+        args = mock.Mock(
+            config="config.json",
+            days=30,
+            limit=None,
+            dry_run=False,
+            no_artefacts=no_artefacts,
+        )
+        with (
+            mock.patch.object(ts, "load_config", return_value=cfg),
+            mock.patch.object(ts, "search_code_page", side_effect=_search_code_page),
+            mock.patch.object(ts, "fetch_repo_meta", side_effect=_fetch_repo_meta),
+            mock.patch.object(
+                ts, "fetch_artefact_content", side_effect=_fetch_artefact_content
+            ),
+            mock.patch.object(ts.time, "sleep"),
+        ):
+            rc = ts.cmd_scan(args)
+        payload = json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
+        return rc, payload, cfg
+
+    def test_artefact_candidate_shape_in_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("good/repo")],
+                meta_by_repo={"good/repo": self._meta()},
+                content_by_repo={"good/repo": "memory index"},
+            )
+        self.assertEqual(rc, 0)
+        art = [c for c in payload["candidates"] if c["lane"] == "artefact"]
+        self.assertEqual(len(art), 1)
+        self.assertEqual(art[0]["repo"], "good/repo")
+
+    def test_fork_is_excluded_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/fork-repo")],
+                meta_by_repo={"a/fork-repo": self._meta(fork=True)},
+                content_by_repo={"a/fork-repo": "x"},
+            )
+        self.assertEqual(payload["dropped"]["fork"], 1)
+        self.assertEqual(
+            [c for c in payload["candidates"] if c["lane"] == "artefact"], []
+        )
+
+    def test_template_is_excluded_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/tmpl")],
+                meta_by_repo={"a/tmpl": self._meta(is_template=True)},
+                content_by_repo={"a/tmpl": "x"},
+            )
+        self.assertEqual(payload["dropped"]["template"], 1)
+
+    def test_archived_is_excluded_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/old")],
+                meta_by_repo={"a/old": self._meta(archived=True)},
+                content_by_repo={"a/old": "x"},
+            )
+        self.assertEqual(payload["dropped"]["archived"], 1)
+
+    def test_below_artefact_star_floor_is_excluded_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/tiny")],
+                meta_by_repo={"a/tiny": self._meta(stargazers_count=1)},
+                content_by_repo={"a/tiny": "x"},
+                artefact_min_stars=20,
+            )
+        self.assertEqual(payload["dropped"]["stars"], 1)
+
+    def test_stale_repo_is_excluded_and_counted(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/stale")],
+                meta_by_repo={"a/stale": self._meta(pushed_at=old)},
+                content_by_repo={"a/stale": "x"},
+                active_within_days=365,
+            )
+        self.assertEqual(payload["dropped"]["stale"], 1)
+
+    def test_own_repo_excluded_via_artefact_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("me/my-project")],
+                meta_by_repo={"me/my-project": self._meta()},
+                content_by_repo={"me/my-project": "x"},
+                own_repos=["me/my-project"],
+            )
+        self.assertEqual(payload["dropped"]["own"], 1)
+
+    def test_metadata_fetch_failure_drops_silently_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/gone")],
+                meta_by_repo={},
+                content_by_repo={},
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["candidates"], [])
+
+    def test_content_hash_dedup_across_different_repos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/one"), self._hit("a/two")],
+                meta_by_repo={"a/one": self._meta(), "a/two": self._meta()},
+                content_by_repo={
+                    "a/one": "identical template body",
+                    "a/two": "identical template body",
+                },
+            )
+        art = [c for c in payload["candidates"] if c["lane"] == "artefact"]
+        self.assertEqual(len(art), 1)
+        self.assertEqual(payload["dropped"]["dup_content"], 1)
+
+    def test_content_hash_dedup_against_prior_state(self):
+        prior_hash = ts.content_prefix_hash("identical template body")
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/one")],
+                meta_by_repo={"a/one": self._meta()},
+                content_by_repo={"a/one": "identical template body"},
+                content_hashes={prior_hash: "2020-01-01"},
+            )
+        self.assertEqual(payload["dropped"]["dup_content"], 1)
+
+    def test_seen_store_excludes_repeat_artefact_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("seen/repo")],
+                meta_by_repo={"seen/repo": self._meta()},
+                content_by_repo={"seen/repo": "x"},
+                seen={"seen/repo": "2099-01-01"},
+            )
+        self.assertEqual(payload["dropped"]["seen"], 1)
+
+    def test_covered_ledger_excludes_artefact_repo_by_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            with (state_dir / "covered_log.jsonl").open("w", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "date": "2026-01-01T00:00:00+00:00",
+                            "url": "https://github.com/done/repo",
+                            "note": "",
+                        }
+                    )
+                    + "\n"
+                )
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("done/repo")],
+                meta_by_repo={"done/repo": self._meta()},
+                content_by_repo={"done/repo": "x"},
+            )
+        self.assertEqual(payload["dropped"]["covered"], 1)
+
+    def test_same_repo_two_artefacts_dedups_to_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _rc, payload, _cfg = self._run_scan(
+                tmp,
+                hits=[self._hit("a/b", "CLAUDE.md"), self._hit("a/b", "AGENTS.md")],
+                meta_by_repo={"a/b": self._meta()},
+                content_by_repo={"a/b": "memory index"},
+            )
+        art = [c for c in payload["candidates"] if c["lane"] == "artefact"]
+        self.assertEqual(len(art), 1)
+        self.assertEqual(payload["dropped"]["dup"], 1)
+
+    def test_no_artefacts_flag_skips_lane_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(ts, "artefact_lane") as m_lane:
+                _rc, payload, _cfg = self._run_scan(
+                    tmp,
+                    hits=[self._hit("a/b")],
+                    meta_by_repo={"a/b": self._meta()},
+                    content_by_repo={"a/b": "x"},
+                    no_artefacts=True,
+                )
+            m_lane.assert_not_called()
+        self.assertEqual(payload["candidates"], [])
+        self.assertEqual(sum(payload["dropped"].values()), 0)
+
+    def test_summary_line_reports_artefacts_and_repos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self._run_scan(
+                    tmp,
+                    hits=[self._hit("a/b")],
+                    meta_by_repo={"a/b": self._meta()},
+                    content_by_repo={"a/b": "x"},
+                )
+            out = buf.getvalue()
+        self.assertIn("artefacts=1", out)
+        self.assertIn("repos=1", out)
+
+    def test_rate_limited_lane_does_not_fail_the_whole_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _full_config()
+            cfg["state_dir"] = str(Path(tmp) / "state")
+            cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
+            cfg["search_queries"] = []
+            cfg["topics"] = []
+            cfg["hn_queries"] = []
+            args = mock.Mock(
+                config="config.json",
+                days=30,
+                limit=None,
+                dry_run=False,
+                no_artefacts=False,
+            )
+            with (
+                mock.patch.object(ts, "load_config", return_value=cfg),
+                mock.patch.object(
+                    ts,
+                    "search_code_page",
+                    return_value=([], "gh: API rate limit exceeded (HTTP 403)"),
+                ),
+                mock.patch.object(ts.time, "sleep"),
+            ):
+                rc = ts.cmd_scan(args)
+            payload = json.loads(
+                Path(cfg["candidates_file"]).read_text(encoding="utf-8")
+            )
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("rate limit" in e for e in payload["errors"]))
+
+
+class ArtefactDryRunTests(unittest.TestCase):
+    def test_dry_run_lists_artefact_queries_by_default(self):
+        cfg = _full_config()
+        args = mock.Mock(
+            config="config.json",
+            days=None,
+            limit=None,
+            dry_run=True,
+            no_artefacts=False,
+        )
+        buf = io.StringIO()
+        with (
+            mock.patch.object(ts, "load_config", return_value=cfg),
+            mock.patch("sys.stdout", buf),
+        ):
+            ts.cmd_scan(args)
+        out = buf.getvalue()
+        self.assertIn("lane 3", out)
+        self.assertIn("claude-md", out)
+        self.assertIn("filename:CLAUDE.md", out)
+
+    def test_no_artefacts_suppresses_lane_3_preview(self):
+        cfg = _full_config()
+        args = mock.Mock(
+            config="config.json",
+            days=None,
+            limit=None,
+            dry_run=True,
+            no_artefacts=True,
+        )
+        buf = io.StringIO()
+        with (
+            mock.patch.object(ts, "load_config", return_value=cfg),
+            mock.patch("sys.stdout", buf),
+        ):
+            ts.cmd_scan(args)
+        out = buf.getvalue()
+        self.assertIn("skipped (--no-artefacts)", out)
+        self.assertNotIn("claude-md", out)
+
+    def test_dry_run_makes_no_calls_with_artefacts_enabled(self):
+        cfg = _full_config()
+        args = mock.Mock(
+            config="config.json",
+            days=None,
+            limit=None,
+            dry_run=True,
+            no_artefacts=False,
+        )
+        with (
+            mock.patch.object(ts, "load_config", return_value=cfg),
+            mock.patch.object(
+                ts, "search_code_page", side_effect=AssertionError("no gh in dry-run")
+            ),
+            mock.patch.object(
+                ts,
+                "artefact_lane",
+                side_effect=AssertionError("no lane call in dry-run"),
+            ),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            rc = ts.cmd_scan(args)
+        self.assertEqual(rc, 0)
+
+
 class NoOutboundTests(unittest.TestCase):
     """teardown-sweep is read-only discovery with no outbound path, like
     placement-health. This guard freezes that property: an edit that adds a

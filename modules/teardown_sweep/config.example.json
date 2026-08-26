@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to config.json and edit own_repos for your project(s). Everything else here is usable as-is: search_queries/topics/hn_queries are generic 'agent architecture discovery' terms, not project-specific, so a fresh checkout can scan immediately. Nothing here posts, comments, or contacts anyone - scan only discovers, scores, and ranks; a human decides what (if anything) to write about, entirely outside this tool. Read README.md's Etiquette section before writing a teardown from anything this surfaces.",
+  "_comment": "Copy to config.json and edit own_repos for your project(s). Everything else here is usable as-is: search_queries/topics/hn_queries/artefact_queries are generic 'agent architecture discovery' terms, not project-specific, so a fresh checkout can scan immediately. Nothing here posts, comments, or contacts anyone - scan only discovers, scores, and ranks; a human decides what (if anything) to write about, entirely outside this tool. Read README.md's Etiquette section before writing a teardown from anything this surfaces.",
   "own_repos": [
     "your-org/your-repo"
   ],
@@ -20,6 +20,13 @@
     "claude code setup",
     "agent memory system"
   ],
+  "artefact_queries": [
+    {"label": "claude-md", "query": "filename:CLAUDE.md size:>4000"},
+    {"label": "agents-md", "query": "filename:AGENTS.md size:>4000"},
+    {"label": "claude-settings", "query": "filename:settings.json path:.claude size:>2000"},
+    {"label": "cursor-rules", "query": "path:.cursor/rules size:>2000"},
+    {"label": "copilot-instructions", "query": "filename:copilot-instructions.md path:.github size:>2000"}
+  ],
   "richness_keywords": [
     "memory",
     "context",
@@ -32,9 +39,28 @@
     "retrieval",
     "guardrail"
   ],
+  "pattern_signals": {
+    "p01": ["roles/", "persona", "subagent", "role composition", "sub-agent"],
+    "p02": ["classify-then-act", "classify then act", "triage queue", "classify and act"],
+    "p03": ["dead man's switch", "sentinel", "freshness check", "staleness check", "heartbeat monitor"],
+    "p04": ["tier by impact", "impact tier", "severity tier", "tiered by impact"],
+    "p05": ["memory index", "memory pointer", "memory.md", "pointer file"],
+    "p06": ["bitwarden", "1password", "credentials never", "secrets vault", "never in files"],
+    "p07": ["pretooluse", "pre-tooluse", "blocklist guard", "hook guard", "deny list"],
+    "p08": ["audit cadence", "weekly audit", "audit ledger", "periodic audit"],
+    "p09": ["context budget", "compaction", "context window budget", "token budget"],
+    "p10": ["lessons.md", "self-edit", "gated edit", "lessons learned file"],
+    "p11": ["scaffold register", "falsifiable hypothesis", "scaffold hypothesis", "register the scaffold"],
+    "p12": ["recurring vs on-demand", "loop selection", "on-demand loop", "interval-triggered loop"],
+    "p13": ["red-team", "divergent lens", "adversarial critic", "devil's advocate"],
+    "p14": ["task board", "delegation queue", "kanban board", "agent queue"],
+    "p15": ["model tiering", "cost routing", "tiered model", "tier by cost"]
+  },
   "min_stars": 50,
+  "artefact_min_stars": 20,
   "active_within_days": 365,
   "hn_min_points": 10,
+  "artefact_pages_per_query": 1,
   "per_query": 20,
   "emit_cap": 60,
   "seen_retention_days": 180,
