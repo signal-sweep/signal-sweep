@@ -27,15 +27,17 @@ Promotion leverage leads the rest. The get-listed family (`list-sweep`, built; `
 Ideas that fit the pipeline and may graduate to issues when someone wants to build them.
 
 **Inbound answers** (thread-sweep's mechanics, new sources)
+- ~~`benchmark-sweep`~~. **Built ([modules/benchmark_sweep/](modules/benchmark_sweep/))**: threads + arXiv papers where a benchmark of the project's domain properties would settle the argument, tallied per property. Discovery-only; the offer-the-run act stage stays dormant until a benchmark exists.
 - ~~`forum-sweep`~~. **Built ([modules/forum_sweep/](modules/forum_sweep/))**: Discourse vendor forums (primary) + Hacker News + Lobsters + an opt-in discovery-only Reddit lane, via per-source adapters on the shared gated pipeline.
 - ~~`mention-sweep`~~. **Built ([modules/mention_sweep/](modules/mention_sweep/))**: entity-first discovery of where the project is named or misdescribed (GitHub issues/discussions + `gh search code`); gated engage / correct / amplify.
 
 **Submission and distribution**
-- `cfp-sweep` — conference/meetup CFP discovery matched to your topics, with drafted abstracts.
+- ~~`cfp-sweep`~~. **Built ([modules/cfp_sweep/](modules/cfp_sweep/))**: conference-data dataset lane + venue watchlist, open/closed/unknown window detection, per-venue cooldown ledger; drafting and submission stay human-gated per submission.
 - ~~`release-sweep`~~. **Built ([modules/release_sweep/](modules/release_sweep/))**: per-channel announcement material assembled from the real release diff; gated drafting + posting.
 - `directory-sweep` — non-GitHub tool directories and registries, same registry-plus-gate shape as list-sweep. Promoted to Next in watchlist-only form (a 2026 channel health-check narrowed it from a broad crawler).
 
 **Content creation**
+- ~~`teardown-sweep`~~. **Built ([modules/teardown_sweep/](modules/teardown_sweep/))**: ranked, inward-facing discovery of published agent architectures worth a respectful written teardown on your own property.
 - `qa-content-sweep` — turn the questions people actually ask (including other modules' rejected candidates) into FAQ/docs pages on your own property. Inbound, zero spam surface.
 - `trend-sweep` — survey what's trending on YouTube/podcasts in your domain; draft micro-learning artifacts that teach the trending concept using your project as the worked example. Drafting automates; publishing cadence stays a human decision, per artifact.
 - `digest-sweep` — periodic state-of-the-niche digest assembled from sweep data. Carries a cadence commitment; adopt deliberately.
@@ -52,4 +54,4 @@ Several modules feed each other: thread-sweep's rejects feed qa-content-sweep, l
 
 Anything that weakens the gate: auto-post paths, batch approval, schedulers that act unattended. Modules that can't work inside the gate don't belong in this project.
 
-**stack-sweep** ([#3](https://github.com/signal-sweep/signal-sweep/issues/3)) — pointing the pipeline at Stack Overflow / Stack Exchange. Dropped after a 2026 review: Stack Overflow's public-question flow has fallen roughly 95% from its peak as developers moved to LLM chat and private communities, and the public Q&A venues that absorbed the spillover (GitHub Discussions, Discourse) are already covered by thread-sweep and forum-sweep. A thin Stack Exchange adapter on forum-sweep could still catch the residual long-tail later; a dedicated module is not worth building.
+**stack-sweep** ([#3](https://github.com/signal-sweep/signal-sweep/issues/3)) — pointing the pipeline at Stack Overflow / Stack Exchange. Dropped after a 2026 review: Stack Overflow's public-question flow has fallen roughly 95% from its peak as developers moved to LLM chat and private communities, and the public Q&A venues that absorbed the spillover (GitHub Discussions, Discourse) are already covered by thread-sweep and forum-sweep. That thin adapter now exists: forum-sweep ships an opt-in Stack Exchange lane (#25) for the residual long tail; a dedicated module remains not worth building.
