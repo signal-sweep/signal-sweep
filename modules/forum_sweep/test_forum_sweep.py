@@ -822,5 +822,587 @@ class DryRunWritesNothingTests(unittest.TestCase):
             self.assertIn(f"candidates -> {cand_path}", out)
 
 
+def _se_question(**overrides):
+    """A live-shape /search/excerpts question item (fields confirmed against
+    the real API during build: tags, question_score, is_accepted,
+    has_accepted_answer, answer_count, is_answered, question_id, item_type,
+    score, last_activity_date, creation_date, body, excerpt, title)."""
+    item = {
+        "tags": ["python", "agents"],
+        "question_score": 2,
+        "is_accepted": False,
+        "has_accepted_answer": False,
+        "answer_count": 2,
+        "is_answered": False,
+        "question_id": 111,
+        "item_type": "question",
+        "score": 5,
+        "last_activity_date": 1700000500,
+        "creation_date": 1700000000,
+        "body": "full body text",
+        "excerpt": (
+            'How do I keep <span class="highlight">agent</span> memory '
+            "current&#39;s state?&hellip;"
+        ),
+        "title": "Agent memory isn&#39;t persisting",
+    }
+    item.update(overrides)
+    return item
+
+
+def _se_answer(**overrides):
+    """A live-shape /search/excerpts answer item: no answer_count/
+    has_accepted_answer (question-only fields), carries answer_id instead,
+    and `title` still holds the parent question's title (confirmed live)."""
+    item = {
+        "tags": ["python", "agents"],
+        "question_score": 2,
+        "is_accepted": True,
+        "answer_id": 222,
+        "is_answered": True,
+        "question_id": 111,
+        "item_type": "answer",
+        "score": 9,
+        "last_activity_date": 1700000600,
+        "creation_date": 1700000300,
+        "body": "answer body text",
+        "excerpt": "Store it in a vector store keyed by session",
+        "title": "Agent memory isn't persisting",
+    }
+    item.update(overrides)
+    return item
+
+
+def _devto_article(**overrides):
+    """A live-shape /api/articles item (fields confirmed against the real API
+    during build)."""
+    art = {
+        "id": 1,
+        "title": "Building durable agent memory",
+        "description": "Patterns for keeping agent memory consistent across sessions",
+        "url": "https://dev.to/someone/building-durable-agent-memory-1a2b",
+        "path": "/someone/building-durable-agent-memory-1a2b",
+        "published_at": "2026-07-20T00:00:00Z",
+        "positive_reactions_count": 12,
+        "comments_count": 3,
+        "tag_list": ["ai", "agents"],
+        "tags": "ai, agents",
+    }
+    art.update(overrides)
+    return art
+
+
+class StackExchangeAdapterTests(unittest.TestCase):
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _cfg(
+        self, sites=("stackoverflow",), min_score=0, enabled=True, query_groups=None
+    ):
+        return {
+            "sources": {
+                "stackexchange": {
+                    "enabled": enabled,
+                    "sites": list(sites),
+                    "min_score": min_score,
+                }
+            },
+            "query_groups": query_groups or {"memory": ["agent memory"]},
+        }
+
+    def test_disabled_by_default_makes_no_call(self):
+        cfg = self._cfg(enabled=False)
+        with mock.patch.object(fs, "http_get_json") as mocked:
+            results = fs.stackexchange_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_no_sites_configured_makes_no_call(self):
+        cfg = self._cfg(sites=())
+        with mock.patch.object(fs, "http_get_json") as mocked:
+            results = fs.stackexchange_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_parses_question_and_answer_items_with_correct_urls(self):
+        payload = {"items": [_se_question(), _se_answer()]}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 2)
+        q, a = results
+        self.assertEqual(q["url"], "https://stackoverflow.com/q/111")
+        self.assertEqual(a["url"], "https://stackoverflow.com/a/222")
+        self.assertEqual(q["lane"], "stackexchange")
+        self.assertEqual(q["source"], "stackoverflow")
+        self.assertEqual(q["pattern"], "memory")
+
+    def test_html_entities_and_highlight_span_stripped(self):
+        payload = {"items": [_se_question()]}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        cand = results[0]
+        self.assertEqual(cand["title"], "Agent memory isn't persisting")
+        self.assertNotIn("&#39;", cand["title"])
+        self.assertNotIn("<span", cand["snippet"])
+        self.assertNotIn("&#39;", cand["snippet"])
+        self.assertNotIn("&hellip;", cand["snippet"])
+        self.assertIn("agent", cand["snippet"].lower())
+
+    def test_comments_field_uses_answer_count_for_questions_zero_for_answers(self):
+        payload = {"items": [_se_question(answer_count=4), _se_answer()]}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results[0]["comments"], 4)
+        self.assertEqual(results[1]["comments"], 0)
+
+    def test_is_answered_flows_through_and_boosts_relevance_tier(self):
+        # Same answer_count (0) on both so comments contributes equally to
+        # each side, isolating is_answered as the only scoring difference.
+        payload = {
+            "items": [
+                _se_question(is_answered=False, answer_count=0),
+                _se_question(is_answered=True, answer_count=0, question_id=112),
+            ]
+        }
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        unanswered, answered = results
+        self.assertIs(unanswered["is_answered"], False)
+        self.assertIs(answered["is_answered"], True)
+        # relevance_tier (sweepcore) reads is_answered as an answer-gap
+        # signal for free -- no adapter-side ranking needed.
+        self.assertGreater(
+            fs.TIER_RANK[fs.relevance_tier(unanswered)],
+            fs.TIER_RANK[fs.relevance_tier(answered)],
+        )
+
+    def test_min_score_floor_drops_low_score_items(self):
+        payload = {"items": [_se_question(score=-1), _se_answer(score=5)]}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(min_score=0), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["url"], "https://stackoverflow.com/a/222")
+
+    def test_malformed_rows_skipped_without_killing_the_lane(self):
+        payload = {
+            "items": [
+                "not-a-dict",
+                {"item_type": "question"},  # no question_id and no answer_id
+                {"item_type": "answer"},  # no answer_id and no question_id
+                _se_question(),
+            ]
+        }
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+
+    def test_answer_missing_its_own_id_falls_back_to_the_question_link(self):
+        # Real SE responses always carry answer_id on an answer row (confirmed
+        # live). If one somehow doesn't, degrading to the parent question's
+        # link is the fail-open choice -- a possibly-relevant candidate stays
+        # in the digest rather than being silently dropped.
+        payload = {"items": [{"item_type": "answer", "question_id": 1, "score": 1}]}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["url"], "https://stackoverflow.com/q/1")
+
+    def test_non_list_items_payload_yields_no_candidates(self):
+        payload = {"items": "not-a-list"}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_failed_fetch_for_one_site_does_not_raise(self):
+        with mock.patch.object(fs, "http_get_json", return_value=None):
+            results = fs.stackexchange_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+
+class StackExchangeBackoffTests(unittest.TestCase):
+    """The `backoff` field is a JSON-body throttle hint, distinct from the
+    429/503 Retry-After sweepcore.http_get already backs off on. It must be
+    honoured (slept on) without holding the lane's earned marker, because the
+    fetch that carries it still succeeded (PR #21's rule is about coverage,
+    not about a perfectly quiet run)."""
+
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    CFG = {
+        "sources": {"stackexchange": {"enabled": True, "sites": ["stackoverflow"]}},
+        "query_groups": {"memory": ["agent memory"]},
+    }
+
+    def test_backoff_field_triggers_a_stubbed_sleep(self):
+        payload = {"items": [], "backoff": 7}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            with mock.patch.object(fs.time, "sleep") as mock_sleep:
+                fs.stackexchange_adapter(self.CFG, self.SINCE, fs.LaneReport())
+        mock_sleep.assert_called_once_with(7.0)
+
+    def test_backoff_alone_does_not_mark_the_lane_unclean(self):
+        payload = {"items": [], "backoff": 3}
+        report = fs.LaneReport()
+        report.fetch_ok()  # what the real http_get_json records on a 200
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            with mock.patch.object(fs.time, "sleep"):
+                fs.stackexchange_adapter(self.CFG, self.SINCE, report)
+        self.assertEqual(len(report), 0)
+        self.assertTrue(report.clean)
+
+    def test_non_numeric_backoff_is_ignored_without_crashing(self):
+        payload = {"items": [], "backoff": "soon"}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            with mock.patch.object(fs.time, "sleep") as mock_sleep:
+                fs.stackexchange_adapter(self.CFG, self.SINCE, fs.LaneReport())
+        mock_sleep.assert_not_called()
+
+
+class SeSiteUrlTests(unittest.TestCase):
+    def test_vanity_domain(self):
+        self.assertEqual(fs._se_site_url("stackoverflow"), "https://stackoverflow.com")
+
+    def test_non_vanity_slug_uses_stackexchange_dot_com(self):
+        self.assertEqual(fs._se_site_url("ai"), "https://ai.stackexchange.com")
+        self.assertEqual(
+            fs._se_site_url("some-new-site"), "https://some-new-site.stackexchange.com"
+        )
+
+
+class SeExcerptCleanTests(unittest.TestCase):
+    def test_unescapes_entities_and_strips_highlight_span(self):
+        raw = 'It doesn&#39;t <span class="highlight">persist</span>&hellip;'
+        self.assertEqual(fs._clean_se_excerpt(raw), "It doesn't persist…")
+
+    def test_none_and_empty_are_safe(self):
+        self.assertEqual(fs._clean_se_excerpt(""), "")
+        self.assertEqual(fs._clean_se_excerpt(None), "")
+
+
+class TokenOverlapPatternTests(unittest.TestCase):
+    GROUPS = {
+        "memory": ["agent memory"],
+        "hooks": ["destructive command hook guard"],
+    }
+
+    def test_returns_the_matching_pattern_at_the_floor(self):
+        text = "A deep dive into agent memory architectures"
+        self.assertEqual(fs._token_overlap_pattern(text, self.GROUPS), "memory")
+
+    def test_returns_none_below_the_floor(self):
+        text = "A single mention of agent tooling, nothing else relevant"
+        self.assertIsNone(fs._token_overlap_pattern(text, self.GROUPS))
+
+    def test_case_insensitive(self):
+        text = "AGENT MEMORY at scale"
+        self.assertEqual(fs._token_overlap_pattern(text, self.GROUPS), "memory")
+
+    def test_picks_the_higher_overlap_group(self):
+        text = "A destructive command hook guard also touches agent memory briefly"
+        self.assertEqual(fs._token_overlap_pattern(text, self.GROUPS), "hooks")
+
+
+class DevToAdapterTests(unittest.TestCase):
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _cfg(self, tags=("ai",), min_reactions=3, enabled=True, query_groups=None):
+        return {
+            "sources": {
+                "devto": {
+                    "enabled": enabled,
+                    "tags": list(tags),
+                    "min_reactions": min_reactions,
+                }
+            },
+            "query_groups": query_groups or {"memory": ["agent memory"]},
+        }
+
+    def test_disabled_by_default_makes_no_call(self):
+        cfg = self._cfg(enabled=False)
+        with mock.patch.object(fs, "http_get_json") as mocked:
+            results = fs.devto_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_no_tags_configured_makes_no_call(self):
+        cfg = self._cfg(tags=())
+        with mock.patch.object(fs, "http_get_json") as mocked:
+            results = fs.devto_adapter(cfg, self.SINCE, [])
+        mocked.assert_not_called()
+        self.assertEqual(results, [])
+
+    def test_parses_matching_article_with_shared_candidate_schema(self):
+        payload = [_devto_article()]
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.devto_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+        cand = results[0]
+        self.assertEqual(
+            cand["url"], "https://dev.to/someone/building-durable-agent-memory-1a2b"
+        )
+        self.assertEqual(cand["source"], "dev.to")
+        self.assertEqual(cand["lane"], "devto")
+        self.assertEqual(cand["score_or_stars"], 12)
+        self.assertEqual(cand["comments"], 3)
+        self.assertEqual(cand["pattern"], "memory")
+
+    def test_min_reactions_floor_drops_low_reaction_articles(self):
+        payload = [_devto_article(positive_reactions_count=1)]
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.devto_adapter(self._cfg(min_reactions=3), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_window_filters_articles_published_before_since(self):
+        old = _devto_article(published_at="2026-01-01T00:00:00Z")
+        with mock.patch.object(fs, "http_get_json", return_value=[old]):
+            results = fs.devto_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_token_overlap_floor_drops_unrelated_articles(self):
+        unrelated = _devto_article(
+            title="A guide to CSS grid layouts",
+            description="Learn flexbox and grid for responsive design",
+        )
+        with mock.patch.object(fs, "http_get_json", return_value=[unrelated]):
+            results = fs.devto_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+    def test_malformed_rows_skipped_without_killing_the_lane(self):
+        payload = ["not-a-dict", {"title": "no url field"}, _devto_article()]
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.devto_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(len(results), 1)
+
+    def test_non_list_payload_yields_no_candidates(self):
+        payload = {"error": "not found"}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            results = fs.devto_adapter(self._cfg(), self.SINCE, [])
+        self.assertEqual(results, [])
+
+
+class NewSourceEarnedStampTests(ScanHarness, unittest.TestCase):
+    """The PR #21 earned-marker rule, plus the shared seen-store/per-source-cap
+    pipeline, proven end-to-end for the two new sources through cmd_scan with
+    only the HTTP layer faked -- the same shape as FetchAccountingTests uses
+    for discourse, extended to stackexchange/devto so the SOURCES/ADAPTERS
+    wiring is proven, not just each adapter's own parsing."""
+
+    def _se_body(self, question_id=901, score=5):
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "tags": ["python"],
+                        "question_score": 1,
+                        "is_accepted": False,
+                        "has_accepted_answer": False,
+                        "answer_count": 0,
+                        "is_answered": False,
+                        "question_id": question_id,
+                        "item_type": "question",
+                        "score": score,
+                        "last_activity_date": now_epoch,
+                        "creation_date": now_epoch,
+                        "body": "b",
+                        "excerpt": "agent memory question",
+                        "title": "Agent memory",
+                    }
+                ],
+                "has_more": False,
+                "quota_max": 300,
+                "quota_remaining": 299,
+            }
+        )
+
+    def _devto_body(self, article_id=1):
+        return json.dumps(
+            [
+                {
+                    "id": article_id,
+                    "title": "Agent memory patterns",
+                    "description": "notes on agent memory",
+                    "url": f"https://dev.to/x/agent-memory-{article_id}",
+                    "path": f"/x/agent-memory-{article_id}",
+                    "published_at": datetime.now(timezone.utc).isoformat(),
+                    "positive_reactions_count": 10,
+                    "comments_count": 2,
+                    "tag_list": ["ai"],
+                    "tags": "ai",
+                }
+            ]
+        )
+
+    def _run(self, tmp, source, sources_cfg, http_get_fn, extra_last_run=None):
+        last_run = dict(self.OLD)
+        if extra_last_run:
+            last_run.update(extra_last_run)
+        cfg_path, state_file = self._setup(
+            tmp, {"last_run_by_source": last_run, "seen": {}}, sources=sources_cfg
+        )
+        args = argparse.Namespace(
+            config=str(cfg_path), source=source, days=None, limit=None, dry_run=False
+        )
+        with mock.patch.object(fs, "http_get", http_get_fn):
+            fs.cmd_scan(args)
+        return cfg_path, state_file
+
+    def test_stackexchange_disabled_holds_and_makes_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fs, "http_get") as mocked_http:
+                _cfg_path, state_file = self._run(
+                    tmp,
+                    "stackexchange",
+                    {"stackexchange": {"sites": ["stackoverflow"]}},  # enabled omitted
+                    mocked_http,
+                )
+            mocked_http.assert_not_called()
+            self.assertNotIn("stackexchange", self._marks(state_file))
+
+    def test_stackexchange_clean_fetch_earns_a_fresh_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._se_body()
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "stackexchange",
+                {"stackexchange": {"enabled": True, "sites": ["stackoverflow"]}},
+                ok,
+            )
+            marks = self._marks(state_file)
+            self.assertIn("stackexchange", marks)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(
+                marks["stackexchange"]
+            )
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_stackexchange_failed_fetch_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def failing(url, **kwargs):
+                return 503, "", "HTTP 503"
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "stackexchange",
+                {"stackexchange": {"enabled": True, "sites": ["stackoverflow"]}},
+                failing,
+                extra_last_run={"stackexchange": "2026-07-05T00:00:00+00:00"},
+            )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["stackexchange"], "2026-07-05T00:00:00+00:00")
+
+    def test_devto_disabled_holds_and_makes_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fs, "http_get") as mocked_http:
+                _cfg_path, state_file = self._run(
+                    tmp, "devto", {"devto": {"tags": ["ai"]}}, mocked_http
+                )
+            mocked_http.assert_not_called()
+            self.assertNotIn("devto", self._marks(state_file))
+
+    def test_devto_clean_fetch_earns_a_fresh_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._devto_body()
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            _cfg_path, state_file = self._run(
+                tmp, "devto", {"devto": {"enabled": True, "tags": ["ai"]}}, ok
+            )
+            marks = self._marks(state_file)
+            self.assertIn("devto", marks)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(marks["devto"])
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_devto_failed_fetch_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def failing(url, **kwargs):
+                return 503, "", "HTTP 503"
+
+            _cfg_path, state_file = self._run(
+                tmp,
+                "devto",
+                {"devto": {"enabled": True, "tags": ["ai"]}},
+                failing,
+                extra_last_run={"devto": "2026-07-06T00:00:00+00:00"},
+            )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["devto"], "2026-07-06T00:00:00+00:00")
+
+    def test_seen_store_dedups_stackexchange_candidates_across_scans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._se_body(question_id=555)
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            cfg_path, _state_file = self._run(
+                tmp,
+                "stackexchange",
+                {"stackexchange": {"enabled": True, "sites": ["stackoverflow"]}},
+                ok,
+            )
+            cand_path = Path(json.loads(cfg_path.read_text())["candidates_file"])
+            first = json.loads(cand_path.read_text())
+            self.assertEqual(len(first["candidates"]), 1)
+
+            args = argparse.Namespace(
+                config=str(cfg_path),
+                source="stackexchange",
+                days=None,
+                limit=None,
+                dry_run=False,
+            )
+            with mock.patch.object(fs, "http_get", ok):
+                fs.cmd_scan(args)
+            second = json.loads(cand_path.read_text())
+            self.assertEqual(len(second["candidates"]), 0)
+            self.assertEqual(second["dropped"]["seen"], 1)
+
+    def test_per_source_cap_applies_to_a_stackexchange_site(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now_epoch = int(datetime.now(timezone.utc).timestamp())
+            items = [
+                {
+                    "tags": ["python"],
+                    "question_score": 1,
+                    "is_accepted": False,
+                    "has_accepted_answer": False,
+                    "answer_count": 0,
+                    "is_answered": False,
+                    "question_id": 1000 + n,
+                    "item_type": "question",
+                    "score": n,
+                    "last_activity_date": now_epoch,
+                    "creation_date": now_epoch,
+                    "body": "b",
+                    "excerpt": "agent memory question",
+                    "title": f"Agent memory {n}",
+                }
+                for n in range(10)
+            ]
+            body = json.dumps({"items": items, "has_more": False})
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            cfg_path, _state_file = self._run(
+                tmp,
+                "stackexchange",
+                {"stackexchange": {"enabled": True, "sites": ["stackoverflow"]}},
+                ok,
+            )
+            cand_path = Path(json.loads(cfg_path.read_text())["candidates_file"])
+            payload = json.loads(cand_path.read_text())
+            # default per_source_cap (DEFAULTS) is 4; one phrase * one site ->
+            # a single request returning 10 items, capped to 4 kept.
+            self.assertEqual(len(payload["candidates"]), 4)
+            self.assertEqual(payload["dropped"]["source_cap"], 6)
+
+
 if __name__ == "__main__":
     unittest.main()
