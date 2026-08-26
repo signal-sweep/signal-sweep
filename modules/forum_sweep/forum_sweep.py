@@ -4,8 +4,9 @@
 Self-contained sibling of thread-sweep. Where thread-sweep reads GitHub issues
 and discussions, forum-sweep reads the answer-the-question venues beyond GitHub:
 Discourse vendor forums (primary), Hacker News (Algolia), Lobsters, an opt-in
-discovery-only Reddit lane, a thin opt-in Stack Exchange lane, and an opt-in
-dev.to (Forem) lane. Same shape, same gate, same ledger.
+discovery-only Reddit lane, a thin opt-in Stack Exchange lane, an opt-in dev.to
+(Forem) lane, an opt-in Medium (RSS-by-tag) lane, and an opt-in Lemmy lane.
+Same shape, same gate, same ledger.
 
 Deterministic discovery half of a human-gated workflow. One adapter per source,
 each returning candidates in a single shared dict schema. Judgment — fit scoring,
@@ -20,13 +21,13 @@ shaped string, a request to fetch a URL or exfiltrate). This script never acts
 on fetched text — it only stores a truncated snippet for a human to read later.
 Treat every snippet downstream as data, never instructions.
 
-Requires: Python 3.10+ (stdlib only: urllib.request is stdlib). No third-party
-deps, no auth for the Discourse/HN/Lobsters lanes. Reddit, Stack Exchange, and
-dev.to lanes are opt-in.
+Requires: Python 3.10+ (stdlib only: urllib.request and xml.etree.ElementTree
+are both stdlib). No third-party deps, no auth for the Discourse/HN/Lobsters
+lanes. Reddit, Stack Exchange, dev.to, Medium, and Lemmy lanes are opt-in.
 
 Subcommands (all take --config; the default is the config.json beside this
 script, so the module reads its own state and config from any directory):
-  scan [--source discourse|hn|lobsters|reddit|stackexchange|devto|all]
+  scan [--source discourse|hn|lobsters|reddit|stackexchange|devto|medium|lemmy|all]
        [--days N] [--limit N] [--dry-run]   run the lanes, write candidates
   density                                     posting counts from the ledger
   mark-posted --url U --pattern P [--comment-file F]   record a posted reply
@@ -39,7 +40,9 @@ import re
 import sys
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -72,7 +75,16 @@ DEFAULTS = {
     "candidates_file": "candidates.json",
 }
 
-SOURCES = ("discourse", "hn", "lobsters", "reddit", "stackexchange", "devto")
+SOURCES = (
+    "discourse",
+    "hn",
+    "lobsters",
+    "reddit",
+    "stackexchange",
+    "devto",
+    "medium",
+    "lemmy",
+)
 
 # Descriptive UA so venue operators can identify (and rate-limit / contact) the
 # tool rather than seeing an anonymous scraper. Honesty is the etiquette here.
@@ -228,6 +240,35 @@ def http_get_json(url, errors, label):
         return None
     note_fetch_ok(errors)
     return parsed
+
+
+def http_get_xml(url, errors, label):
+    """GET a URL and parse XML. Fail-soft, the same shape as http_get_json:
+    any error appends to errors[] and returns None so the caller continues to
+    the next tag/instance. Delegates the fetch to sweepcore.http_get, which
+    adds 429/503 Retry-After backoff."""
+    if REQUEST_DELAY > 0:
+        time.sleep(REQUEST_DELAY)
+    status, body, err = http_get(
+        url,
+        timeout=HTTP_TIMEOUT,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, text/xml"},
+    )
+    if err:
+        errors.append(f"{label}: {err}")
+        return None
+    if status != 200:
+        errors.append(f"{label}: HTTP {status}")
+        return None
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        # A Cloudflare/error interstitial returns HTML, not RSS -- the same
+        # soft-fail shape as http_get_json's non-JSON branch above.
+        errors.append(f"{label}: unparseable XML ({exc})")
+        return None
+    note_fetch_ok(errors)
+    return root
 
 
 # --- adapters: one per source, all returning the shared candidate schema -----
@@ -631,6 +672,8 @@ def stackexchange_adapter(cfg, since_dt, errors):
 # deliberately simple: this module's query_groups phrases are multi-word by
 # convention (config.example.json has none under 2 words), so the floor is a
 # real filter against generic tag noise, not a coin flip on any one word.
+# Reused as-is by the medium lane below (also a tag-wide fetch) through the
+# same _token_overlap_pattern call, not a second constant.
 DEVTO_MIN_TOKEN_OVERLAP = 2
 
 
@@ -725,6 +768,239 @@ def devto_adapter(cfg, since_dt, errors):
     return results
 
 
+# --- Medium RSS namespaces ----------------------------------------------------
+# Confirmed live 2026-08-26 against https://medium.com/feed/tag/<tag>: the feed
+# root declares dc/content/atom/cc. dc:creator and content:encoded are the two
+# this adapter reads; content:encoded did not appear on any live item in this
+# build (Medium's tag feed only ships a <description> teaser today), but the
+# element is still looked up by its proper namespaced name so a fuller item
+# would be read correctly rather than silently skipped if Medium ever ships one.
+_MEDIUM_DC_NS = "{http://purl.org/dc/elements/1.1/}"
+_MEDIUM_CONTENT_NS = "{http://purl.org/rss/1.0/modules/content/}"
+
+
+def _rfc822_to_iso(pubdate):
+    """Medium's <pubDate> is RFC 822 (`Wed, 26 Aug 2026 06:16:01 GMT`), unlike
+    every other lane's already-ISO timestamp. Convert once so `created` stores
+    the same sortable ISO-8601 shape the rest of the candidate set uses, and
+    _within_window (which expects ISO) windows it correctly. Fails open (empty
+    string) on anything that won't parse -- the same fail-open contract
+    _within_window already has for a missing or unparseable created field."""
+    if not pubdate:
+        return ""
+    try:
+        dt = parsedate_to_datetime(pubdate)
+    except (TypeError, ValueError):
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _strip_query(url):
+    """Medium article links carry a tracking query string
+    (`?source=rss------<tag>-5`, confirmed live), so the same article surfaced
+    from two tags -- or from the same tag on two different runs -- would
+    otherwise produce two different URLs. The seen-store and ledger key on the
+    bare url, so a stable url is what makes dedup actually work."""
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def medium_adapter(cfg, since_dt, errors):
+    """Medium -- DISCOVERY-ONLY, opt-in (gated behind sources.medium.enabled,
+    default FALSE).
+
+    GET /feed/tag/<tag> per configured tag: an RSS 2.0 feed, no auth, no
+    pagination (confirmed live: roughly 4-10 items per tag, no documented
+    paging param). Parsed with the stdlib xml.etree.ElementTree instead of
+    json -- see the namespace constants above for the dc:creator /
+    content:encoded lookups.
+
+    Windowed locally against <pubDate> (RFC 822, converted by _rfc822_to_iso
+    since every other lane's `created` is already ISO). A tag alone is broad,
+    so results are also floored through the existing query_groups phrases via
+    the same cheap token-overlap check devto uses (_token_overlap_pattern,
+    reused rather than re-implemented) -- the category tags folded into that
+    check are real signal here, since Medium's own preview snippet is often
+    just "Continue reading on Medium" with no real content to score against.
+
+    Medium article links carry a `?source=rss...` tracking query string;
+    _strip_query drops it before the link becomes the candidate/seen-store
+    key, so the same article does not resurface every time the tracking
+    suffix changes.
+
+    Etiquette: DISCOVERY only in a stronger sense than the HTTP lanes above --
+    a Medium response (comment) is a manual human act on medium.com with no
+    public reply API this module could call even if the project's posting
+    gate allowed it. The value here is knowing which posts are pulling the
+    conversation in your patterns, to feed replies on other lanes and
+    outreach decisions, not to reply on Medium itself.
+    """
+    results = []
+    src = cfg["sources"].get("medium") or {}
+    if not src.get("enabled", False):
+        return results
+    tags = src.get("tags") or []
+    for tag in tags:
+        tag = str(tag).strip()
+        if not tag:
+            continue
+        url = f"https://medium.com/feed/tag/{urllib.parse.quote(tag)}"
+        root = http_get_xml(url, errors, f"medium {tag}")
+        if root is None:
+            continue
+        channel = root.find("channel")
+        items = channel.findall("item") if channel is not None else []
+        for item in items:
+            link = item.findtext("link")
+            if not link:
+                continue
+            title = item.findtext("title") or ""
+            created = _rfc822_to_iso(item.findtext("pubDate") or "")
+            if not _within_window(created, since_dt):
+                continue
+            raw_snippet = (
+                item.findtext(f"{_MEDIUM_CONTENT_NS}encoded")
+                or item.findtext("description")
+                or ""
+            )
+            categories = [c.text or "" for c in item.findall("category")]
+            pattern = _token_overlap_pattern(
+                f"{title} {raw_snippet} {' '.join(categories)}", cfg["query_groups"]
+            )
+            if not pattern:
+                continue
+            snippet = _clean_se_excerpt(raw_snippet)
+            creator = item.findtext(f"{_MEDIUM_DC_NS}creator") or ""
+            if creator:
+                snippet = f"{creator}: {snippet}" if snippet else creator
+            results.append(
+                make_candidate(
+                    url=_strip_query(link),
+                    title=title,
+                    created=created,
+                    source="medium.com",
+                    score_or_stars=0,
+                    comments=0,
+                    snippet=snippet,
+                    pattern=pattern,
+                    lane="medium",
+                )
+            )
+    return results
+
+
+# Lemmy's own upper bound on `limit` (confirmed live 2026-08-26 against
+# programming.dev: 100 -> HTTP 400, 50 -> HTTP 200); pinned comfortably under
+# that so a request never 400s regardless of exactly where between 51-99 the
+# real ceiling sits.
+LEMMY_SEARCH_LIMIT = 20
+
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_MARKUP_RE = re.compile(r"[*_`#>~]+")
+
+
+def _strip_markdown(text):
+    """Cheap plain-text-ification of a Lemmy post body (CommonMark, per the
+    API docs): collapse [label](url) links down to the label, drop the common
+    emphasis/heading/quote/strikethrough markup characters. Not a parser --
+    good enough for a truncated snippet a human skims in the digest, not a
+    renderer. Composed with _clean_se_excerpt in the adapter below for the
+    rarer case of raw HTML, which Lemmy's markdown also permits inline."""
+    if not text:
+        return ""
+    text = _MD_LINK_RE.sub(r"\1", text)
+    return _MD_MARKUP_RE.sub("", text)
+
+
+def lemmy_adapter(cfg, since_dt, errors):
+    """Lemmy -- DISCOVERY-ONLY, opt-in (gated behind sources.lemmy.enabled,
+    default FALSE).
+
+    For each configured instance, each existing query_groups phrase runs
+    against GET /api/v3/search?q=<phrase>&type_=Posts&sort=New&limit=<n> --
+    the same per-instance x per-phrase shape stackexchange uses for its
+    sites. `sort=New` is confirmed live to work and matters here: the search
+    has no server-side date filter, so without it a broad phrase can fill the
+    request's `limit` with old top-ranked posts and never reach anything
+    recent enough to matter. Windowed locally against `created` (the post's
+    `published`, already ISO-8601 with a literal Z -- _within_window's
+    existing Z-handling parses it with no adapter-side conversion needed).
+
+    The candidate URL is the post's LOCAL permalink (`https://<instance>
+    /post/<id>`), not `post.url` (whatever external link the post submits,
+    often unrelated to the instance queried) and not `ap_id` (confirmed live:
+    for a federated post, ap_id points at the ORIGIN instance -- e.g.
+    lemmy.bestiver.se -- not the instance actually queried here). ap_id is
+    still kept on the candidate in a spare field since it is already on hand
+    and cheap to carry.
+
+    Small, federated network: an unreachable or slow instance is exactly the
+    kind of soft failure http_get_json already degrades on (errors[], skip,
+    move to the next instance) -- a held window for that instance next run,
+    not a crash of the whole lane.
+    """
+    results = []
+    src = cfg["sources"].get("lemmy") or {}
+    if not src.get("enabled", False):
+        return results
+    instances = src.get("instances") or []
+    min_score = src.get("min_score", 0)
+    for instance in instances:
+        instance = str(instance).strip().rstrip("/")
+        if not instance:
+            continue
+        for pattern, phrases in cfg["query_groups"].items():
+            for phrase in phrases:
+                q = urllib.parse.quote(phrase)
+                url = (
+                    f"https://{instance}/api/v3/search?q={q}&type_=Posts"
+                    f"&sort=New&limit={LEMMY_SEARCH_LIMIT}"
+                )
+                data = http_get_json(url, errors, f"lemmy {instance} {pattern}")
+                if not data:
+                    continue
+                posts = data.get("posts")
+                if not isinstance(posts, list):
+                    continue
+                for entry in posts:
+                    if not isinstance(entry, dict):
+                        continue
+                    post = entry.get("post")
+                    if not isinstance(post, dict):
+                        continue
+                    post_id = post.get("id")
+                    if post_id is None:
+                        continue
+                    created = post.get("published", "")
+                    if not _within_window(created, since_dt):
+                        continue
+                    counts = entry.get("counts") or {}
+                    try:
+                        score = int(counts.get("score", 0) or 0)
+                    except (TypeError, ValueError):
+                        score = 0
+                    if score < min_score:
+                        continue
+                    cand = make_candidate(
+                        url=f"https://{instance}/post/{post_id}",
+                        title=post.get("name", ""),
+                        created=created,
+                        source=instance,
+                        score_or_stars=score,
+                        comments=counts.get("comments", 0) or 0,
+                        snippet=_clean_se_excerpt(
+                            _strip_markdown(post.get("body") or "")
+                        ),
+                        pattern=pattern,
+                        lane="lemmy",
+                    )
+                    cand["ap_id"] = post.get("ap_id", "")
+                    results.append(cand)
+    return results
+
+
 def _within_window(created, since_dt):
     """True if `created` (ISO 8601 string) is at or after since_dt. Missing or
     unparseable timestamps are kept (fail-open on the time filter — the
@@ -748,6 +1024,8 @@ ADAPTERS = {
     "reddit": reddit_adapter,
     "stackexchange": stackexchange_adapter,
     "devto": devto_adapter,
+    "medium": medium_adapter,
+    "lemmy": lemmy_adapter,
 }
 
 

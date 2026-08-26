@@ -88,6 +88,24 @@
         "claudeai"
       ],
       "min_reactions": 3
+    },
+    "medium": {
+      "_caveat": "DISCOVERY-ONLY and opt-in -- more so than every other lane. Medium responses (comments) are a manual human act on medium.com; there is no reply API this lane could call even if the project's posting gate allowed it. The value is knowing which posts are pulling the conversation in your patterns, to feed replies on other lanes (Discourse/HN/etc.) and outreach decisions, not to reply on Medium itself. Leave enabled=false unless you understand this.",
+      "enabled": false,
+      "tags": [
+        "ai-agents",
+        "claude",
+        "llm",
+        "agentic-ai"
+      ]
+    },
+    "lemmy": {
+      "_caveat": "DISCOVERY-ONLY and opt-in. Small, federated network: an unreachable or slow instance degrades gracefully like every other multi-instance lane in this module -- a held window for that instance next run, not a failure of the whole scan. Leave enabled=false unless you understand this.",
+      "enabled": false,
+      "instances": [
+        "programming.dev"
+      ],
+      "min_score": 2
     }
   },
   "thresholds": {
