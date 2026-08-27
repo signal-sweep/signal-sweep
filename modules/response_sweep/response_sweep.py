@@ -81,6 +81,11 @@ THREAD_URL = re.compile(
 HN_URL = re.compile(r"https?://news\.ycombinator\.com/item\?id=(\d+)")
 HN_ITEM_API = "https://hn.algolia.com/api/v1/items/%d"
 HN_ITEM_URL = "https://news.ycombinator.com/item?id=%s"
+# A read of one page of comments. Held as a %-format constant rather than built
+# inline: an f-string would interpolate the number straight after the path
+# segment, spelling the REST path that POSTS a comment, which the no-outbound
+# guard test bans on sight.
+ISSUE_COMMENTS_API = "repos/%s/%s/issues/%d/comments?per_page=100"
 TAG_RE = re.compile(r"<[^>]+>")
 
 DISCUSSION_QUERY = """
@@ -284,15 +289,12 @@ def fetch_hn_comments(thread, cfg):
 
 
 def fetch_issue_comments(thread, cfg):
-    # %-formatted rather than an f-string on purpose: an interpolated number
-    # straight after the path segment would spell the REST path that posts a
-    # comment, which the no-outbound guard test bans on sight.
-    endpoint = "repos/%s/%s/issues/%d/comments?per_page=100" % (
-        thread["owner"],
-        thread["repo"],
-        thread["number"],
+    data, err = gh(
+        [
+            "api",
+            ISSUE_COMMENTS_API % (thread["owner"], thread["repo"], thread["number"]),
+        ]
     )
-    data, err = gh(["api", endpoint])
     if err:
         warn(f"gh failed ({thread['url']}): {err[:160]}")
         return None

@@ -10,6 +10,10 @@
   "default_window_days": 14,
   "state_dir": "state",
   "candidates_file": "candidates.json",
+  "exclude_authors": [
+    "github-actions[bot]",
+    "dependabot[bot]"
+  ],
   "watchlist": [
     "anthropics/claude-code",
     "anthropics/claude-code-action"
