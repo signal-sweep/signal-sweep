@@ -21,6 +21,41 @@
       "expect": "agent-workspace-architecture",
       "kind": "list",
       "status": "pending"
+    },
+    {
+      "name": "awesome-agent-workspaces README (own property)",
+      "url": "https://raw.githubusercontent.com/jimy-r/awesome-agent-workspaces/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "sindresorhus/awesome (awesome index submission)",
+      "url": "https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "hesreallyhim/awesome-claude-code (related-list submission)",
+      "url": "https://raw.githubusercontent.com/hesreallyhim/awesome-claude-code/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "nibzard/awesome-agentic-patterns (related-list submission)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "Meirtz/Awesome-Context-Engineering (related-list submission)",
+      "url": "https://raw.githubusercontent.com/Meirtz/Awesome-Context-Engineering/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
     }
   ]
 }

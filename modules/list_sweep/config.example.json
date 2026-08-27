@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to config.json and edit for your project. This example is real: it targets the curated lists where agent-workspace-architecture / signal-sweep could be listed. 'topics' and 'search_keywords' drive both fit-scoring and lane-1 search. 'watchlist' is known target lists classified directly. 'placements_path' points at a placement-health placements.json so lists you are already in are excluded. Nothing here submits anything - scan only discovers, classifies, and drafts; a human submits behind the gate.",
+  "_comment": "Copy to config.json and edit for your project. This example is real: it targets the curated lists where agent-workspace-architecture / signal-sweep could be listed. 'topics' and 'search_keywords' drive both fit-scoring and lane-1 search. 'watchlist' is known target lists classified directly. 'placements_path' points at a placement-health placements.json so lists you are already in are excluded. Nothing here submits anything - scan only discovers, classifies, and drafts; a human submits behind the gate, and mark-submitted records it afterwards. One config tracks ONE subject repo ('own_repo'): to run the module for a second project, copy this file and run it with --config.",
   "own_repo": "jimy-r/agent-workspace-architecture",
   "own_tagline": "patterns and reference architecture for agent workspaces",
   "topics": [
@@ -15,10 +15,15 @@
     "awesome-agentic",
     "awesome-ai-agents",
     "awesome-llm-tools",
-    "awesome-prompt-engineering"
+    "awesome-prompt-engineering",
+    "awesome-agentic-patterns",
+    "awesome-context-engineering"
   ],
   "watchlist": [
+    "sindresorhus/awesome",
     "hesreallyhim/awesome-claude-code",
+    "nibzard/awesome-agentic-patterns",
+    "Meirtz/Awesome-Context-Engineering",
     "VoltAgent/awesome-agent-skills",
     "devrelcollective/awesome-devrel",
     "MarsX-dev/devhunt",
