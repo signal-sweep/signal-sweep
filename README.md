@@ -80,7 +80,7 @@ These are why it stays useful instead of becoming the next muted bot.
 
 ## Quick start
 
-Requires Python 3.10+ and an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login`). No other dependencies — stdlib plus `gh`.
+Requires Python 3.10+ and an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login`). No other dependencies — stdlib plus `gh`. (Floor plan: 3.10 reaches end-of-life in October 2026; the floor moves to 3.11 in the first release after, and CI already tests 3.10/3.13/3.14.)
 
 See the [thread-sweep](#thread-sweep-the-one-to-start-with) commands above. Every module follows the same shape: edit a small JSON config, dry-run, scan, judge, post the ones that clear your bar, record each.
 

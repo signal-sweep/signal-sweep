@@ -1,0 +1,7 @@
+# CI toolchain pins (audit findings a2ff9494 + dd954f33). Pinned on purpose:
+# ruff's default lint set moves between releases (the 0.15->0.16 jump turned
+# 102 findings on with no code change -- ruff.toml's explicit select now
+# absorbs that class). Dependabot watches this file so bumps arrive as PRs
+# instead of depending on someone remembering.
+ruff==0.16.1
+coverage==7.14.1

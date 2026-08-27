@@ -1,26 +1,68 @@
 {
-  "_comment": "Copy to placements.json and edit. This example is real: the agent-workspace-architecture project's actual placements. 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
+  "_comment": "Copy to placements.json and edit. This example is real: the flagship project's actual placements as of 2026-08-27 (9 entries). 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
   "placements": [
     {
-      "name": "GitHub Pages tour (own property)",
+      "name": "Flagship - GitHub Pages tour (own property)",
       "url": "https://jimy-r.github.io/agent-workspace-architecture/",
       "expect": "Agent Workspace Architecture",
       "kind": "page",
       "status": "live"
     },
     {
-      "name": "Repo README (own property)",
+      "name": "Flagship - repo README (own property)",
       "url": "https://raw.githubusercontent.com/jimy-r/agent-workspace-architecture/main/README.md",
       "expect": "PATTERNS.md",
       "kind": "page",
       "status": "live"
     },
     {
-      "name": "jqueryscript/awesome-claude-code (list submission)",
-      "url": "https://raw.githubusercontent.com/jqueryscript/awesome-claude-code/main/README.md",
+      "name": "Flagship README cross-link -> signal-sweep",
+      "url": "https://raw.githubusercontent.com/jimy-r/agent-workspace-architecture/main/README.md",
+      "expect": "signal-sweep",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "signal-sweep - repo README (own property)",
+      "url": "https://raw.githubusercontent.com/signal-sweep/signal-sweep/main/README.md",
+      "expect": "per-comment approval",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "hesreallyhim/awesome-claude-code (~46k stars; recommend-resource issue submitted 2026-06-21)",
+      "url": "https://raw.githubusercontent.com/hesreallyhim/awesome-claude-code/main/README.md",
       "expect": "agent-workspace-architecture",
       "kind": "list",
       "status": "pending"
+    },
+    {
+      "name": "Meirtz/Awesome-Context-Engineering (PR #70)",
+      "url": "https://raw.githubusercontent.com/Meirtz/Awesome-Context-Engineering/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "rohitg00/awesome-claude-code-toolkit (PR #523, Ecosystem)",
+      "url": "https://raw.githubusercontent.com/rohitg00/awesome-claude-code-toolkit/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "nibzard/awesome-agentic-patterns (PR #98, dead-mans-switch)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/patterns/dead-mans-switch-for-scheduled-agent-jobs.md",
+      "expect": "James Ross",
+      "kind": "list",
+      "status": "live"
+    },
+    {
+      "name": "nibzard/awesome-agentic-patterns (PR #99, context-budget)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/patterns/context-budget-as-a-governed-resource.md",
+      "expect": "James Ross",
+      "kind": "list",
+      "status": "live"
     }
   ]
 }
