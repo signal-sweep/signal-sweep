@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to config.json and edit for your project. This example is real: it reads the ledgers the thread-sweep and forum-sweep modules write, and filters out the agent-workspace-architecture maintainer's own accounts. 'ledger_paths' are module-relative, so they resolve the same from any directory. Nothing here posts or drafts; check only re-reads threads you already answered and lists the replies you have not seen, and answering one stays a per-comment human decision (see the module README).",
+  "ledger_paths": [
+    "../thread_sweep/state/posted_ledger.jsonl",
+    "../forum_sweep/state/forum_sweep_log.jsonl"
+  ],
+  "own_logins": [
+    "jimy-r"
+  ],
+  "own_hn_users": [
+    "jimy-r"
+  ],
+  "exclude_authors": [
+    "github-actions",
+    "github-actions[bot]",
+    "dependabot",
+    "dependabot[bot]"
+  ],
+  "snippet_len": 300,
+  "state_dir": "state"
+}

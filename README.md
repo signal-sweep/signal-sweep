@@ -51,7 +51,7 @@ The module [README](modules/thread_sweep/README.md) covers the lanes, the fit ba
 
 ## The wider toolkit
 
-thread-sweep is one of ten modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health is inward-facing and needs neither). Reach for the others once you've felt the need.
+thread-sweep is one of eleven modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health and response-sweep are inward-facing and need neither). Reach for the others once you've felt the need.
 
 | Module | What it does |
 |---|---|
@@ -65,6 +65,20 @@ thread-sweep is one of ten modules on a shared pipeline (`signal → judge → g
 | [`cfp-sweep`](modules/cfp_sweep/) | Conference/meetup CFP discovery matched to your topics, with submission-window detection and a per-venue cooldown ledger. |
 | [`teardown-sweep`](modules/teardown_sweep/) | Ranked discovery of published agent architectures worth a written teardown. Inward-facing, no gate. |
 | [`benchmark-sweep`](modules/benchmark_sweep/) | Threads and papers where a benchmark of your domain's properties would settle a live argument. Discovery-only demand mapping. |
+| [`response-sweep`](modules/response_sweep/) | Replies to the answers you already posted, read back out of the ledgers. Closes the loop thread-sweep opens. Inward-facing, no gate. |
+
+### response-sweep, the other half of posting
+
+Answering a thread and then never looking at it again is the quiet failure in all of this. Somebody replies with a follow-up question two days later and nobody sees it. response-sweep re-reads every thread in your posted ledgers, on GitHub issues, GitHub discussions, and Hacker News, and lists the comments by other people you have not seen yet.
+
+```bash
+cd modules/response_sweep
+cp config.example.json config.json   # your ledgers, your logins
+python response_sweep.py check       # new replies, newest-answered thread first
+python response_sweep.py clear --id iss:1234567   # after you answer one
+```
+
+It needs no discovery config of its own. The ledgers the other modules already write are the input. Recall only, so there is no gate to weaken: it never posts or drafts, and it leaves the ledgers it reads untouched. Reply text is printed as untrusted external text, because that is exactly what it is. The module [README](modules/response_sweep/README.md) covers the baseline rule and the pending queue.
 
 [ROADMAP.md](ROADMAP.md) holds the direction and the explored-but-unscheduled tail. The toolkit is feature-complete and deliberately small; new modules arrive only when a real need pulls one in.
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to placements.json and edit. This example is real: the flagship project's actual placements as of 2026-08-27 (9 entries). 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
+  "_comment": "Copy to placements.json and edit. This example is real: the flagship project's actual placements as of 2026-08-27, plus the awesome-agent-workspaces list (14 entries). 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
   "placements": [
     {
       "name": "Flagship - GitHub Pages tour (own property)",
@@ -63,6 +63,41 @@
       "expect": "James Ross",
       "kind": "list",
       "status": "live"
+    },
+    {
+      "name": "Awesome-list - repo README (own property)",
+      "url": "https://raw.githubusercontent.com/jimy-r/awesome-agent-workspaces/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "page",
+      "status": "live"
+    },
+    {
+      "name": "Awesome-list -> sindresorhus/awesome (awesome index; eligible after 30-day age + awesome-lint clean)",
+      "url": "https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "Awesome-list -> hesreallyhim/awesome-claude-code (related list)",
+      "url": "https://raw.githubusercontent.com/hesreallyhim/awesome-claude-code/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "Awesome-list -> nibzard/awesome-agentic-patterns (related list)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "Awesome-list -> Meirtz/Awesome-Context-Engineering (related list)",
+      "url": "https://raw.githubusercontent.com/Meirtz/Awesome-Context-Engineering/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
     }
   ]
 }
