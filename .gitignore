@@ -18,3 +18,9 @@ Thumbs.db
 *.pem
 *credentials*
 *secrets*
+
+# Additional private sweep configs and their state (one per target).
+# The example config is the public worked example; these are live targeting.
+config.*.json
+candidates.*.json
+state-*/

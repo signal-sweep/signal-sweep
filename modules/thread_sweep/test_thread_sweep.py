@@ -196,8 +196,35 @@ class FilterCandidatesTests(unittest.TestCase):
         )
         self.assertEqual([c["url"] for c in kept], [raw[0]["url"]])
         self.assertEqual(
-            dropped, {"seen": 1, "posted": 1, "stars": 1, "own": 2, "dup": 1}
+            dropped,
+            {
+                "seen": 1,
+                "posted": 1,
+                "stars": 1,
+                "own": 2,
+                "dup": 1,
+                "excluded_author": 0,
+            },
         )
+
+    def test_excluded_authors_are_dropped_case_insensitively(self):
+        cfg = self._cfg()
+        cfg["exclude_authors"] = ["PaperBot", "release-announcer"]
+        raw = [
+            self._cand(),
+            self._cand(url="https://x/bot1", author="paperbot"),
+            self._cand(url="https://x/bot2", author="Release-Announcer"),
+        ]
+        kept, dropped = ts.filter_candidates(raw, {}, set(), cfg)
+        self.assertEqual([c["url"] for c in kept], [raw[0]["url"]])
+        self.assertEqual(dropped["excluded_author"], 2)
+
+    def test_exclude_authors_absent_from_config_is_safe(self):
+        cfg = self._cfg()
+        cfg.pop("exclude_authors", None)
+        kept, dropped = ts.filter_candidates([self._cand()], {}, set(), cfg)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped["excluded_author"], 0)
 
     def test_watchlist_lane_bypasses_star_floor(self):
         raw = [self._cand(stars=1, lane="watchlist")]

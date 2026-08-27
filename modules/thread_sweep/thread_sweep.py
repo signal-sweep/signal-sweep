@@ -229,7 +229,11 @@ def filter_candidates(raw, seen, posted, cfg):
     """The keep/drop pass over raw candidates: batch-dup, posted-ledger,
     seen-store, own-repo/own-login, and the query-lane star floor (watchlist
     entries are hand-curated, so they bypass it). Pure — mutates nothing."""
-    kept, dropped = [], {"seen": 0, "posted": 0, "stars": 0, "own": 0, "dup": 0}
+    kept, dropped = (
+        [],
+        {"seen": 0, "posted": 0, "stars": 0, "own": 0, "dup": 0, "excluded_author": 0},
+    )
+    excluded_authors = {a.lower() for a in cfg.get("exclude_authors", [])}
     batch_urls = set()
     for cand in raw:
         url = cand["url"]
@@ -244,6 +248,12 @@ def filter_candidates(raw, seen, posted, cfg):
             continue
         if cand["author"] == cfg["own_login"] or cand["repo"] == cfg["own_repo"]:
             dropped["own"] += 1
+            continue
+        # Recurring automated posters (paper-digest bots, release announcers) match
+        # topic phrasings well and never have a problem you can help with. Matching
+        # is case-insensitive because GitHub logins are.
+        if cand["author"].lower() in excluded_authors:
+            dropped["excluded_author"] += 1
             continue
         if cand["lane"] == "query" and cand["stars"] < cfg["min_stars"]:
             dropped["stars"] += 1
