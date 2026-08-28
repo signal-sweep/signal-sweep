@@ -4,21 +4,21 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
-## v0.4.0 â€” four new modules, eight forum lanes — 2026-08-26
+## v0.4.0 — four new modules, eight forum lanes — 2026-08-26
 
 The toolkit grows from six modules to ten, and forum coverage from four lanes to eight. Discovery automates; every outbound act stays individually human-gated, unchanged.
 
 ## New modules
 
-- **cfp-sweep** (#26) â€” conference/meetup CFP discovery from the tech-conferences dataset + a venue watchlist, open/closed/unknown window detection that refuses to guess missing years, and a per-venue cooldown ledger so no program committee is pitched twice in a cycle.
-- **newsletter-sweep** (#28, closes #4) â€” outlet registry with live-verified submission mechanics, alive/changed/unreachable freshness checks, cooldown ledger. Email is draft-only, never send.
-- **teardown-sweep** (#24, #31) â€” ranked, inward-facing discovery of published agent architectures worth a written teardown. v2 adds an artefact code-search lane (CLAUDE.md, AGENTS.md, .claude/, .cursor/rules with server-side size floors inside the 10 req/min budget), pattern-density scoring that peaks where a teardown has the most to say, and fork/template/content-hash flood guards.
-- **benchmark-sweep** (#23) â€” threads and papers where a benchmark of your domain's properties would settle a live argument, tallied per property. Discovery-only; the act stage stays dormant by design.
+- **cfp-sweep** (#26) — conference/meetup CFP discovery from the tech-conferences dataset + a venue watchlist, open/closed/unknown window detection that refuses to guess missing years, and a per-venue cooldown ledger so no program committee is pitched twice in a cycle.
+- **newsletter-sweep** (#28, closes #4) — outlet registry with live-verified submission mechanics, alive/changed/unreachable freshness checks, cooldown ledger. Email is draft-only, never send.
+- **teardown-sweep** (#24, #31) — ranked, inward-facing discovery of published agent architectures worth a written teardown. v2 adds an artefact code-search lane (CLAUDE.md, AGENTS.md, .claude/, .cursor/rules with server-side size floors inside the 10 req/min budget), pattern-density scoring that peaks where a teardown has the most to say, and fork/template/content-hash flood guards.
+- **benchmark-sweep** (#23) — threads and papers where a benchmark of your domain's properties would settle a live argument, tallied per property. Discovery-only; the act stage stays dormant by design.
 
 ## forum-sweep: eight lanes
 
-- Thin **Stack Exchange** adapter and **dev.to** lane (#25) â€” the roadmap's stack-sweep carve-out, opt-in, with quota/backoff handling and the Stack Overflow AI-answer-policy caveat spelled out.
-- **Medium RSS tag lane** and **Lemmy** adapter (#29) â€” opt-in, tracking-param-stable seen keys, federated-permalink handling.
+- Thin **Stack Exchange** adapter and **dev.to** lane (#25) — the roadmap's stack-sweep carve-out, opt-in, with quota/backoff handling and the Stack Overflow AI-answer-policy caveat spelled out.
+- **Medium RSS tag lane** and **Lemmy** adapter (#29) — opt-in, tracking-param-stable seen keys, federated-permalink handling.
 
 ## Fixes and docs
 
@@ -26,26 +26,26 @@ The toolkit grows from six modules to ten, and forum coverage from four lanes to
 
 Full pipeline count: 11 offline test suites, all green on 3.10 and 3.13.
 
-## v0.3.1 â€” correctness sweep — 2026-07-12
+## v0.3.1 — correctness sweep — 2026-07-12
 
-A scan where every request failed used to advance the last-run stamp anyway, silently skipping that window forever; all four scan modules now hold the stamp and re-cover the window next run. Same batch: thread-sweep's query lane uses an inclusive date boundary (GitHub date qualifiers are day-granular, so the old form dropped same-day threads), Discourse snippets are read from the posts array because many instances return no topic excerpt, list-sweep keeps reading intake docs past a generic CONTRIBUTING.md, and the NoAutoPost gate guard now covers sweepcore itself â€” the one shared file every per-module guard was blind to. CI pins ruff and tests the advertised Python 3.10 floor. Suite grows 124 to 142 tests. Full list in #20 and the PR description.
+A scan where every request failed used to advance the last-run stamp anyway, silently skipping that window forever; all four scan modules now hold the stamp and re-cover the window next run. Same batch: thread-sweep's query lane uses an inclusive date boundary (GitHub date qualifiers are day-granular, so the old form dropped same-day threads), Discourse snippets are read from the posts array because many instances return no topic excerpt, list-sweep keeps reading intake docs past a generic CONTRIBUTING.md, and the NoAutoPost gate guard now covers sweepcore itself — the one shared file every per-module guard was blind to. CI pins ruff and tests the advertised Python 3.10 floor. Suite grows 124 to 142 tests. Full list in #20 and the PR description.
 
-## v0.3.0 â€” the toolkit fills out + a shared core — 2026-07-01
+## v0.3.0 — the toolkit fills out + a shared core — 2026-07-01
 
-## v0.3.0 â€” the toolkit fills out + a shared core
+## v0.3.0 — the toolkit fills out + a shared core
 
 Three new modules, a shared core every module now sits on, and sharper ranking. Everything keeps the same non-negotiable: nothing posts without your explicit per-comment approval.
 
 ### New modules
 
-- **forum-sweep** â€” thread-sweep's job beyond GitHub: Discourse vendor forums (primary), Hacker News, Lobsters, and an opt-in discovery-only Reddit lane, each a thin adapter on the shared gated pipeline.
-- **mention-sweep** â€” entity-first discovery of where your project is already named or misdescribed across issues, discussions, and code. Body-corroboration ranks coincidental-namesake hits last.
-- **list-sweep** â€” finds curated lists and directories you could be listed in, and detects each one's intake mechanics (PR / issue-form / web-form / human-only).
+- **forum-sweep** — thread-sweep's job beyond GitHub: Discourse vendor forums (primary), Hacker News, Lobsters, and an opt-in discovery-only Reddit lane, each a thin adapter on the shared gated pipeline.
+- **mention-sweep** — entity-first discovery of where your project is already named or misdescribed across issues, discussions, and code. Body-corroboration ranks coincidental-namesake hits last.
+- **list-sweep** — finds curated lists and directories you could be listed in, and detects each one's intake mechanics (PR / issue-form / web-form / human-only).
 
 ### Under the hood
 
-- **Shared core (`modules/sweepcore.py`)** â€” dedup, ledger, state, `gh`, HTTP with 429/503 Retry-After backoff, and relevance tiering, imported by every module. Gate and ledger semantics are now identical across the toolkit by construction.
-- **Relevance tiering** â€” a deterministic high / med / low fit band ranks thread and forum candidates so the human triage starts at the most likely hits.
+- **Shared core (`modules/sweepcore.py`)** — dedup, ledger, state, `gh`, HTTP with 429/503 Retry-After backoff, and relevance tiering, imported by every module. Gate and ledger semantics are now identical across the toolkit by construction.
+- **Relevance tiering** — a deterministic high / med / low fit band ranks thread and forum candidates so the human triage starts at the most likely hits.
 - **release-sweep** now buckets highlights by Conventional-Commit type from the real release diff.
 
 ### Tests
@@ -66,7 +66,7 @@ Also since v0.1.0: thread-sweep gained a mentions query group (#6) plus input/er
 
 Full module list and roadmap in the README.
 
-## v0.1.0 â€” thread-sweep — 2026-06-11
+## v0.1.0 — thread-sweep — 2026-06-11
 
 First usable cut: the thread-sweep module. Two-lane GitHub discovery (per-topic search queries + a pinned watchlist) over issues and discussions, with a seen-store so nothing resurfaces, a posted-reply ledger so nothing is answered twice, a venue floor, per-repo caps, and a dry-run mode. Config-driven, stdlib + GitHub CLI only; ships with a real worked-example config and a portable agent-skill wrapper.
 
