@@ -18,6 +18,8 @@ The scanner is recall; you are precision. That division is the whole design. Cod
 
 If that's you, start with **thread-sweep**. The rest of the toolkit is below.
 
+New modules and releases are announced in [Agent Workspaces](https://jimyr.substack.com), the maintainer's digest.
+
 ## thread-sweep, the one to start with
 
 Point it at your repo and your topics. It finds open issues and discussions across GitHub whose problem a specific page of your docs already solves, filters out noise, and writes a ranked shortlist to `candidates.json`. You read it, draft the replies worth posting, and record each one.
