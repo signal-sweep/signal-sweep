@@ -8,7 +8,7 @@ Find the open GitHub issues and discussions whose problem your project's docs al
 
 **Lane 2 (watchlist).** A few repos whose audience overlaps yours so strongly they deserve a look even without keyword hits. The scanner pulls their newest threads since the last run.
 
-Filters before anything reaches you: a venue floor (`min_stars`, watchlist exempt), a per-repo cap so one mega-repo can't flood the output, your own repo and account excluded, everything previously surfaced excluded (seen-store), everything previously *answered* excluded forever (ledger).
+Filters before anything reaches you: a venue floor (`min_stars`, watchlist exempt), a per-repo cap so one mega-repo can't flood the output, your own repo and account excluded, known automated posters excluded (`exclude_authors`, case-insensitive, empty/absent means the filter is off), everything previously surfaced excluded (seen-store), everything previously *answered* excluded forever (ledger).
 
 ## The judgment half is yours
 
@@ -41,6 +41,7 @@ python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --commen
 |---|---|---|
 | `own_login` / `own_repo` | excluded from results | required |
 | `queries` | topic → `{answers_with, phrases[]}` | required |
+| `exclude_authors` | author logins to drop, matched case-insensitively (recurring bots, etc.) | `[]` (absent disables the filter) |
 | `watchlist` | repos pulled without keywords | `[]` |
 | `min_stars` | lane-1 venue floor | `300` |
 | `per_repo_cap` | max candidates per repo per scan | `4` |

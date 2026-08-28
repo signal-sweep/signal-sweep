@@ -1,21 +1,26 @@
 {
   "_comment": "Copy to config.json and edit for your project. This example is real: the match strings, repo URLs, and own-repo exclusions for the agent-workspace-architecture + signal-sweep projects. Discovery is automated; engaging or correcting a mention is always a human gate (see the module README). context_terms = high-confidence corroborating tokens (author handle, doc names, distinctive phrases): a bare-name match is downgraded to 'name-unconfirmed' unless the thread body also carries a url/owner-path form or one of these, which kills coincidental-namesake noise.",
-  "display_name": "agent-workspace-architecture + signal-sweep",
+  "display_name": "agent-workspace-architecture + signal-sweep + awesome-agent-workspaces",
   "match_strings": [
     "agent-workspace-architecture",
     "github.com/jimy-r/agent-workspace-architecture",
     "signal-sweep",
-    "github.com/signal-sweep/signal-sweep"
+    "github.com/signal-sweep/signal-sweep",
+    "awesome-agent-workspaces",
+    "github.com/jimy-r/awesome-agent-workspaces"
   ],
   "own_repos": [
     "jimy-r/agent-workspace-architecture",
-    "signal-sweep/signal-sweep"
+    "signal-sweep/signal-sweep",
+    "jimy-r/awesome-agent-workspaces"
   ],
   "context_terms": [
     "jimy-r",
     "james ross",
     "PATTERNS.md",
-    "agent workspace architecture"
+    "agent workspace architecture",
+    "REJECTIONS.md",
+    "awesome agent workspaces"
   ],
   "min_stars": 0,
   "per_repo_cap": 4,

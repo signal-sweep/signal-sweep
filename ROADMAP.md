@@ -43,12 +43,13 @@ Ideas that fit the pipeline and may graduate to issues when someone wants to bui
 - `digest-sweep` — periodic state-of-the-niche digest assembled from sweep data. Carries a cadence commitment; adopt deliberately.
 
 **Presence intelligence** (inward-facing, no gate needed because nothing is outbound)
+- ~~`response-sweep`~~ (reply tracking). **Built ([modules/response_sweep/](modules/response_sweep/))**: re-reads the threads you already answered, straight out of the posted ledgers, and surfaces replies you have not seen. GitHub issues, discussions, and Hacker News; per-thread baseline plus seen-state dedup, and a pending queue that survives a re-run.
 - ~~`placement-health`~~. **Built ([modules/placement_health/](modules/placement_health/))**: verify your listings stayed live, links unbroken.
 - `adjacent-sweep` — watch neighbouring tools' trackers for unmet needs; roadmap signal plus future thread candidates.
 - `audience-sweep` — cluster stargazers/forkers by org, aggregate only.
 - `citation-sweep` — academic mentions via arXiv/Semantic Scholar.
 
-Several modules feed each other: thread-sweep's rejects feed qa-content-sweep, list-sweep feeds placement-health, adjacent-sweep feeds thread-sweep's queries. The toolkit compounds; that's the point of the shared shape.
+Several modules feed each other: thread-sweep's rejects feed qa-content-sweep, list-sweep feeds placement-health, adjacent-sweep feeds thread-sweep's queries, and thread-sweep plus forum-sweep feed response-sweep their posted ledgers. The toolkit compounds; that's the point of the shared shape.
 
 ## Not planned
 
