@@ -49,7 +49,7 @@ Two discovery lanes feed it: per-topic search phrasings run across all of GitHub
 python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --comment-file reply.md
 ```
 
-The module [README](modules/thread_sweep/README.md) covers the lanes, the fit bar, and the etiquette in full. If you drive it with an agent, [SKILL.example.md](modules/thread_sweep/SKILL.example.md) is a working Claude Code skill with the approval gate spelled out. The shipped `config.example.json` is a real one: the topics the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project actually sweeps.
+The module [README](modules/thread_sweep/README.md) covers the lanes, the fit bar, and the etiquette in full. If you drive it with an agent, [SKILL.example.md](modules/thread_sweep/SKILL.example.md) is a working Claude Code skill with the approval gate spelled out. The shipped `config.example.json` is a real one: the topics the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture?utm_source=github&utm_medium=repo&utm_campaign=signal-sweep) project actually sweeps.
 
 ## The wider toolkit
 
@@ -106,7 +106,7 @@ Issues and PRs welcome, module ideas especially. One rule is non-negotiable: not
 
 ## Built by
 
-[James Ross](https://jamesross.ai) and [Justin Zingsheim](https://github.com/jtzingsheim1). signal-sweep grew out of the thread-sweep module in James's [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) workspace, generalized into a standalone toolkit.
+[James Ross](https://jamesross.ai) and [Justin Zingsheim](https://github.com/jtzingsheim1). signal-sweep grew out of the thread-sweep module in James's [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture?utm_source=github&utm_medium=repo&utm_campaign=signal-sweep) workspace, generalized into a standalone toolkit.
 
 ## License
 
