@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""benchmark-sweep — map the demand for a workspace-property benchmark before
-one exists.
+"""benchmark-sweep - map the demand for a workspace-property benchmark, and
+rank the papers worth reproducing, before either exists.
 
-DISCOVERY-ONLY IN v1. This module has no act stage: no drafting, no posting,
-no ledger, no gate. It exists to answer one question with evidence instead of
-a hunch — which workspace properties (agent memory fidelity, context
-retrieval, provenance/integrity, verification/oversight) do people actually
-argue about, ask how to measure, or wish a benchmark already covered? When a
-real benchmark for one of these properties ships, the act stage ("offer to
-run it in-thread") activates behind the same per-comment human gate every
-other module in this repo uses. See the README before building that.
+DISCOVERY-ONLY. This module has no act stage: no drafting, no posting, no
+approval gate, because nothing it produces is ever sent anywhere. It answers
+two questions with evidence instead of a hunch, off one fetch:
+
+  1. DEMAND - which workspace properties (agent memory fidelity, context
+     retrieval, provenance/integrity, verification/oversight) do people
+     actually argue about, ask how to measure, or wish a benchmark already
+     covered? Answered by the per-property tally over both lanes.
+  2. REPRO-WORTHINESS - of the papers those same phrases surface, which ones
+     could you actually reproduce and publish a study on? Answered by the
+     arXiv lane's per-candidate `code_link` + `repro_tier` annotations and
+     the studied-paper ledger. arXiv-lane only: a GitHub thread is not a
+     reproducible claim, so gh candidates carry neither field.
+
+When a real benchmark for one of these properties ships, the act stage
+("offer to run it in-thread") activates behind the same per-comment human
+gate every other module in this repo uses. See the README before building
+that.
 
 Same recall/precision split as thread-sweep, pointed at a benchmark instead of
 a docs page. Two lanes:
@@ -27,18 +37,25 @@ That tag, tallied per scan, IS the deliverable: which properties people are
 actually asking about, where, and how often — the evidence a benchmark
 building decision would rest on.
 
-Dedup: a seen-store only (every surfaced candidate is surfaced once). No
-posted-response ledger: nothing is ever posted in v1, so nothing is ever
-"already answered." A candidate that also matches a docs page you can already
-answer belongs to thread-sweep's gated flow, not here; this module only maps
-demand, it never tries to resolve it.
+Dedup: a seen-store (every surfaced candidate is surfaced once) plus a
+studied-paper ledger. The ledger records papers a reproduction study has
+already been run on, so finished work never returns to the digest; the
+seen-store prunes on a retention horizon, the ledger does not. Nothing in
+that ledger is a posting record: no reply, no comment, no venue, no
+recipient. This module still has no outbound path of any kind. A candidate
+that also matches a docs page you can already answer belongs to
+thread-sweep's gated flow, not here; this module only maps demand, it never
+tries to resolve it.
 
 SECURITY: every GitHub title/body and every arXiv title/abstract fetched here
 is UNTRUSTED EXTERNAL CONTENT. A snippet can be crafted to look like an
 instruction ("ignore previous instructions", a fake system marker, a
 tool-call-shaped string, a request to fetch a URL or exfiltrate). This script
 never acts on fetched text — it only stores a truncated snippet for a human to
-read. Treat every snippet downstream as data, never instructions.
+read. Treat every snippet downstream as data, never instructions. `code_link`
+is the sharpest instance of that rule: it is a URL lifted verbatim out of
+author-written text, stored so a human can decide to open it. This module
+never fetches it, and nothing downstream should either without looking first.
 
 Requires: Python 3.10+, an authenticated GitHub CLI (`gh auth login`). The
 arXiv lane needs no auth — export.arxiv.org's Atom API is public.
@@ -46,10 +63,14 @@ arXiv lane needs no auth — export.arxiv.org's Atom API is public.
 Subcommands (all take --config; the default is the config.json beside this
 script, so the module reads its own state and config from any directory):
   scan [--days N] [--dry-run]   run both lanes, write candidates.json
+  mark-studied --url U --property P [--study-url S] [--note ...]
+                                record a reproduction study you have run; that
+                                paper never returns to a scan digest
 """
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.parse
@@ -61,12 +82,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
     LaneReport,
+    append_ledger,
     earned_stamp,
     gh_graphql,
     hold_reason,
     http_get,
     load_state,
     note_fetch_ok,
+    posted_urls,
     relevance_tier,
     resolve_module_path,
     window_start,
@@ -123,11 +146,54 @@ ARXIV_USER_AGENT = (
 )
 ARXIV_HTTP_TIMEOUT = 20
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
+# arXiv's own Atom extension namespace. Confirmed live against
+# export.arxiv.org 2026-08-30: an <entry> carries <link> children with
+# href/rel/type (rel="alternate" for the abs page, rel="related" title="pdf")
+# plus arxiv:comment, the free-text author note that conventionally announces
+# a code release ("Code at https://github.com/...").
+ARXIV_NS = "{http://arxiv.org/schemas/atom}"
 
 # Polite inter-request throttle for the arXiv lane (their API usage guidance
 # asks for no more than one request every 3 seconds); set from config at scan
 # start, mirroring forum_sweep's REQUEST_DELAY pattern. 0 disables.
 ARXIV_REQUEST_DELAY = 0.0
+
+# --- repro-worthiness vocabulary ----------------------------------------------
+#
+# The second readout's whole scoring surface, kept here as named constants so a
+# human can read what the tier band actually rests on and edit it without
+# reading the function.
+
+# Hosts a reproduction study could clone or pull weights from. Matched on the
+# URL's host (exact, or as a parent domain) so `nogithub.com` does not count.
+CODE_HOSTS = ("github.com", "gitlab.com", "huggingface.co")
+
+# Claims that give a reproduction something to check. A paper asserting a
+# measured number is reproducible in a way a framing paper is not.
+REPRO_EVAL_MARKERS = (
+    "benchmark",
+    "we evaluate",
+    "we measure",
+    "outperform",
+    "accuracy",
+    "state-of-the-art",
+    "ablation",
+)
+
+# The opposite: papers that survey, position or forecast. There is no result to
+# re-run, so these are demoted hard rather than merely left unscored.
+REPRO_SURVEY_MARKERS = (
+    "survey",
+    "systematic review",
+    "position paper",
+    "vision paper",
+    "roadmap",
+)
+
+_URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
+_PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s?%")
+_ARXIV_ABS_RE = re.compile(r"arxiv\.org/abs/(?P<id>[^\s/?#]+)", re.IGNORECASE)
+_ARXIV_VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
 
 
 def load_config(path):
@@ -175,10 +241,18 @@ def load_config(path):
 def state_paths(cfg):
     # Module-anchored, not CWD-anchored: this module has exactly one canonical
     # state dir wherever it is invoked from. See sweepcore.resolve_module_path.
-    # No ledger path here (unlike the outbound modules) — v1 never posts, so
-    # there is nothing to record having posted.
+    #
+    # The ledger here is NOT the outbound modules' posted-response ledger. It
+    # records reproduction studies this human has run (inward work, nothing
+    # sent), and its only effect on the pipeline is to stop re-surfacing a
+    # paper already finished with. Filename says so, so a reader glancing at
+    # state/ cannot mistake it for a posting history.
     state_dir = resolve_module_path(__file__, cfg["state_dir"])
-    return state_dir, state_dir / "benchmark_sweep_state.json"
+    return (
+        state_dir,
+        state_dir / "benchmark_sweep_state.json",
+        state_dir / "studied_papers.jsonl",
+    )
 
 
 # --- lane 1: GitHub issues + discussions --------------------------------------
@@ -299,28 +373,129 @@ def _arxiv_within_window(entry_date, since_dt):
     return dt >= since_dt
 
 
-def _arxiv_text(entry, tag):
+def _arxiv_text(entry, tag, ns=ATOM_NS):
     """Namespace-qualified child text, whitespace-collapsed; "" if the child
-    is absent or empty (a malformed/sparse entry must degrade, not crash)."""
-    el = entry.find(f"{ATOM_NS}{tag}")
+    is absent or empty (a malformed/sparse entry must degrade, not crash).
+    Defaults to the Atom namespace; pass ARXIV_NS for arXiv's own extension
+    children (comment, primary_category)."""
+    el = entry.find(f"{ns}{tag}")
     if el is None or not el.text:
         return ""
     return " ".join(el.text.split())
 
 
+def _code_url(candidate_url):
+    """`candidate_url` if it points at a code host, else "".
+
+    Trailing sentence punctuation is stripped first: a URL written into an
+    abstract almost always ends the sentence it is in, and `...repo.` is not
+    a clonable address. Host is matched exactly or as a parent domain, so
+    `evilgithub.com` fails and `www.github.com` passes.
+    """
+    url = (candidate_url or "").strip().rstrip(".,;:!?'\"")
+    if "://" not in url:
+        return ""
+    host = url.split("://", 1)[1].split("/", 1)[0].split("@")[-1].lower()
+    host = host.split(":", 1)[0]
+    for code_host in CODE_HOSTS:
+        if host == code_host or host.endswith("." + code_host):
+            return url
+    return ""
+
+
+def _first_code_url(text):
+    """First code-host URL appearing in a blob of text, or ""."""
+    for match in _URL_RE.finditer(text or ""):
+        url = _code_url(match.group(0))
+        if url:
+            return url
+    return ""
+
+
+def detect_code_link(entry, summary):
+    """The code URL an arXiv entry advertises, or "". The single strongest
+    repro signal, because a claim you cannot run is a claim you cannot check.
+
+    Three places, in descending order of how deliberately the author put it
+    there. (1) <link> children: arXiv renders a declared code/DOI resource as
+    its own link element, which is structured and unambiguous. (2) arxiv:
+    comment, the free-text author note where "Code at https://github.com/..."
+    is the long-standing convention. (3) the abstract itself, the loosest
+    source and therefore last.
+
+    SECURITY: the returned URL is UNTRUSTED EXTERNAL CONTENT chosen by the
+    paper's author. It is stored for a human to open deliberately. Nothing in
+    this module fetches it.
+    """
+    for link in entry.findall(f"{ATOM_NS}link"):
+        url = _code_url(link.get("href") or "")
+        if url:
+            return url
+    comment = _first_code_url(_arxiv_text(entry, "comment", ARXIV_NS))
+    if comment:
+        return comment
+    return _first_code_url(summary)
+
+
+def repro_tier(title, abstract, code_link):
+    """A deterministic high/med/low band for "is this worth reproducing?",
+    plus the named signals that produced it.
+
+    Same shape and spirit as sweepcore.relevance_tier: a sum of a few small
+    named signals a human can audit, a triage HINT and never a verdict.
+    Nothing is ever dropped on this score; it only ranks. The signals are
+    returned alongside the band and stored on the candidate, so the digest
+    shows WHY a paper sits where it does without the reader re-deriving it.
+
+      +2  code_link          a runnable artefact exists
+      +1  eval-claim         the paper asserts a measured result to re-check
+      -2  survey             nothing to re-run; a framing paper, not a result
+
+    >=3 high, >=1 med, else low.
+    """
+    signals = []
+    score = 0
+    if code_link:
+        score += 2
+        signals.append("code-link")
+    haystack = f"{title} {abstract}".lower()
+    if any(marker in haystack for marker in REPRO_EVAL_MARKERS) or _PERCENT_RE.search(
+        haystack
+    ):
+        score += 1
+        signals.append("eval-claim")
+    if any(marker in haystack for marker in REPRO_SURVEY_MARKERS):
+        score -= 2
+        signals.append("survey")
+    if score >= 3:
+        return "high", signals
+    if score >= 1:
+        return "med", signals
+    return "low", signals
+
+
 def entry_to_candidate(entry, property_group, matched_phrase):
     """One <entry> -> the shared candidate schema. None on a malformed entry
     (no <id>, which is the abs-link url every real result carries — arXiv's
-    id IS the URL, unlike the other lane where url and id are separate)."""
+    id IS the URL, unlike the other lane where url and id are separate).
+
+    The repro annotations are computed here rather than downstream because
+    this is the last place the FULL abstract exists: `snippet` keeps only the
+    first 200 characters, and a code link or an eval claim in the second half
+    of an abstract would be invisible to anything reading the candidate.
+    """
     url = _arxiv_text(entry, "id")
     if not url:
         return None
     published = _arxiv_text(entry, "published")
     updated = _arxiv_text(entry, "updated")
     summary = _arxiv_text(entry, "summary")
+    title = _arxiv_text(entry, "title")
+    code_link = detect_code_link(entry, summary)
+    tier, signals = repro_tier(title, summary, code_link)
     return {
         "url": url,
-        "title": _arxiv_text(entry, "title"),
+        "title": title,
         # The human-meaningful "when did this first appear" date; `updated`
         # is kept alongside it (a revision bump means renewed activity) and is
         # what the window filter checks first, below.
@@ -334,6 +509,11 @@ def entry_to_candidate(entry, property_group, matched_phrase):
         "property_group": property_group,
         "matched_phrase": matched_phrase,
         "lane": "arxiv",
+        # SECURITY: an author-written URL. Data for a human to open, never
+        # fetched here. "" when the paper advertises no code.
+        "code_link": code_link,
+        "repro_tier": tier,
+        "repro_signals": signals,
     }
 
 
@@ -394,21 +574,52 @@ def arxiv_lane(cfg, since_dt, errors):
 # --- filtering + ranking -------------------------------------------------------
 
 
-def filter_candidates(raw, seen, cfg):
-    """The keep/drop pass over raw candidates: batch-dup, seen-store, and (gh
-    lane only) own-repos exclusion + the star floor. arXiv candidates carry no
-    repo/stars, so they only ever hit the dup/seen checks — there is no
-    "your own repo" or "notable enough" concept for a paper. Pure — mutates
-    nothing. No posted-ledger check: v1 never posts, so nothing is ever
-    already answered.
+def _studied_key(url):
+    """The stable identity a studied-paper ledger entry is matched on.
+
+    The digest stores arXiv's own <id> (http://arxiv.org/abs/2606.29914v1),
+    but a human marking a paper studied is just as likely to paste the https
+    form off the abstract page, or the versionless id. All three name one
+    paper, and a v2 revision must not resurface a reproduction already
+    published, so the key is the versionless arXiv id wherever the URL is an
+    arXiv abs link, and the scheme-stripped URL otherwise. Applied to both
+    sides of the comparison, so it never has to be right about which form the
+    human will use.
     """
-    kept, dropped = [], {"seen": 0, "stars": 0, "own": 0, "dup": 0}
+    raw = (url or "").strip()
+    match = _ARXIV_ABS_RE.search(raw)
+    if match:
+        return _ARXIV_VERSION_RE.sub("", match.group("id")).lower()
+    return raw.split("://", 1)[-1].rstrip("/").lower()
+
+
+def filter_candidates(raw, seen, studied, cfg):
+    """The keep/drop pass over raw candidates: batch-dup, the studied-paper
+    ledger, the seen-store, and (gh lane only) own-repos exclusion + the star
+    floor. arXiv candidates carry no repo/stars, so they only ever hit the
+    dup/studied/seen checks. There is no "your own repo" or "notable enough"
+    concept for a paper. Pure — mutates nothing.
+
+    `studied` is the set of URLs from the studied-paper ledger. It is checked
+    BEFORE the seen-store on purpose: a studied paper is almost always also in
+    seen, and whichever check runs first owns the counter. "You already
+    reproduced this" is the permanent, meaningful reason (the seen-store
+    prunes at seen_retention_days; the ledger never does), so it wins the
+    attribution and the summary line reports a true count.
+
+    No posted-ledger check, because nothing here is ever posted.
+    """
+    kept, dropped = [], {"seen": 0, "stars": 0, "own": 0, "dup": 0, "studied": 0}
     batch_urls = set()
     own_repos = {str(r).lower() for r in cfg["own_repos"]}
+    studied_keys = {_studied_key(u) for u in studied}
     for cand in raw:
         url = cand["url"]
         if url in batch_urls:
             dropped["dup"] += 1
+            continue
+        if _studied_key(url) in studied_keys:
+            dropped["studied"] += 1
             continue
         if url in seen:
             dropped["seen"] += 1
@@ -483,7 +694,7 @@ def cmd_scan(args):
     cfg = load_config(args.config)
     global ARXIV_REQUEST_DELAY
     ARXIV_REQUEST_DELAY = cfg.get("arxiv_request_delay_seconds", 0.0)
-    state_dir, state_file = state_paths(cfg)
+    state_dir, state_file, ledger_file = state_paths(cfg)
     state = load_state(state_file)
     now = datetime.now(timezone.utc)
 
@@ -509,14 +720,23 @@ def cmd_scan(args):
     clean = {name: reports[name].clean for name in LANES}
 
     seen = state.get("seen", {})
-    kept, dropped = filter_candidates(raw, seen, cfg)
+    # Papers a reproduction study has already been run on. Excluded forever,
+    # the way every module in this repo excludes what it has finished with.
+    studied = posted_urls(ledger_file)
+    kept, dropped = filter_candidates(raw, seen, studied, cfg)
 
     for cand in kept:
         cand["tier"] = relevance_tier(cand)
     # Stable multi-key sort (least-significant key first): property group
-    # ascending, tier descending, recency descending within a tier — "grouped
-    # or sorted by property group then tier".
+    # ascending, fit tier descending, repro tier descending within a fit tier,
+    # recency descending within that. The "grouped or sorted by property
+    # group then tier" contract still holds, with the repro readout breaking
+    # the tie the demand readout
+    # leaves. A gh candidate carries no repro tier and ranks at the bottom of
+    # that key, which is the honest answer rather than an artefact: you cannot
+    # run a reproduction study on an issue thread.
     kept.sort(key=lambda c: c["created"], reverse=True)
+    kept.sort(key=lambda c: TIER_RANK.get(c.get("repro_tier"), 0), reverse=True)
     kept.sort(key=lambda c: TIER_RANK[c["tier"]], reverse=True)
     kept.sort(key=lambda c: c["property_group"])
     capped = cap_per_repo(kept, cfg["per_repo_cap"], dropped)
@@ -558,10 +778,18 @@ def cmd_scan(args):
 
     by_property = {prop: 0 for prop in cfg["property_groups"]}
     by_tier = {}
+    # Readout 2. arXiv-lane only, so these counts are over papers, not threads.
+    repro_by_tier = {}
+    code_linked = 0
     for cand in kept:
         group = cand["property_group"]
         by_property[group] = by_property.get(group, 0) + 1
         by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
+        repro = cand.get("repro_tier")
+        if repro:
+            repro_by_tier[repro] = repro_by_tier.get(repro, 0) + 1
+        if cand.get("code_link"):
+            code_linked += 1
 
     since_headline = min(since_by_lane.values()).strftime("%Y-%m-%d")
     payload = {
@@ -578,6 +806,15 @@ def cmd_scan(args):
         # zero included — a quiet property is itself a finding.
         "by_property_group": by_property,
         "by_tier": by_tier,
+        # The repro readout, kept in its own section so the existing fields
+        # downstream consumers already read keep their exact shape. Counts
+        # cover the arXiv lane only; `studied_excluded` is how many papers the
+        # ledger kept out of this digest entirely.
+        "repro": {
+            "code_linked": code_linked,
+            "by_tier": repro_by_tier,
+            "studied_excluded": dropped.get("studied", 0),
+        },
         "dropped": dropped,
         "errors": errors,
         "candidates": kept,
@@ -601,12 +838,39 @@ def cmd_scan(args):
         f"fit tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
         f"{by_tier.get('low', 0)} low"
     )
+    print(
+        f"repro: {code_linked} code-linked / {repro_by_tier.get('high', 0)} high / "
+        f"{dropped.get('studied', 0)} studied-excluded"
+    )
     if args.dry_run:
         print(f"candidates would be written to: {out} (dry run wrote nothing)")
     else:
         print(f"candidates -> {out}")
     for err in errors[:5]:
         print(f"WARN {err}", file=sys.stderr)
+    return 0
+
+
+def cmd_mark_studied(args):
+    """Record one reproduction study in the ledger, retiring that paper from
+    every future digest.
+
+    Inward-facing throughout: the entry names a paper, the property it sits
+    under, and where the study was written up. There is no recipient, no
+    body text, and no venue, because nothing here is sent anywhere. The gate
+    on this is the human typing the command.
+    """
+    cfg = load_config(args.config)
+    _state_dir, _state_file, ledger_file = state_paths(cfg)
+    entry = {
+        "date": datetime.now(timezone.utc).isoformat(),
+        "url": args.url,
+        "property": args.property,
+        "study_url": args.study_url or "",
+        "note": args.note or "",
+    }
+    append_ledger(ledger_file, entry)
+    print(f"LEDGER_OK {args.url} <- studied ({args.property})")
     return 0
 
 
@@ -634,6 +898,29 @@ def main():
         "no seen-marking, no last_run update)",
     )
     scan.set_defaults(func=cmd_scan)
+    mark = sub.add_parser(
+        "mark-studied",
+        help="record a reproduction study you ran on a paper (inward ledger; "
+        "that paper stops appearing in scan digests)",
+    )
+    mark.add_argument(
+        "--url",
+        required=True,
+        help="the arXiv abs URL of the paper studied (any version, http or https)",
+    )
+    mark.add_argument(
+        "--property",
+        required=True,
+        help="the property_groups slug the study sits under",
+    )
+    mark.add_argument(
+        "--study-url",
+        dest="study_url",
+        default=None,
+        help="where your published reproduction study lives",
+    )
+    mark.add_argument("--note", default=None)
+    mark.set_defaults(func=cmd_mark_studied)
     args = parser.parse_args()
     sys.exit(args.func(args))
 

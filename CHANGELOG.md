@@ -4,6 +4,20 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
+## v0.6.0 — benchmark-sweep grows a repro lens — 2026-08-30
+
+benchmark-sweep already fetched the right papers. It just had nothing to say about which of them you could actually go and check.
+
+## benchmark-sweep
+
+- **Repro annotations on arXiv-lane candidates.** Each paper now carries `code_link` (the first github.com / gitlab.com / huggingface.co URL it advertises, read from the entry's `<link>` children, then `arxiv:comment`, then the abstract) and `repro_tier`, a high/med/low band scored from three named signals: a code link is +2, an eval claim in the title or abstract is +1, a survey or position marker is -2. `repro_signals` ships alongside so the band is auditable without re-deriving it. Field shapes confirmed live against export.arxiv.org. gh-lane candidates carry none of this, because an issue thread is not a reproducible claim.
+- **Ranks, never drops.** The repro tier sorts within a property group and fit tier. A survey with code and a number still reaches the digest; it just sits below a paper whose result you can re-measure. No candidate is filtered on this score.
+- **`mark-studied`.** Records a reproduction study you ran (`--url`, `--property`, optional `--study-url` and `--note`) in `state/studied_papers.jsonl`, after which that paper never appears in a scan digest again. Permanent, unlike the seen-store, which prunes at `seen_retention_days`. Matching is scheme- and version-insensitive, so the `http` versioned `<id>` in `candidates.json`, the `https` abs link, and a later `v3` all resolve to one paper.
+- **One more summary line, no restructuring.** `repro: N code-linked / M high / K studied-excluded` prints under the existing demand and fit-tier lines, and the digest gains a `repro` section beside `by_property_group`. Every existing field keeps its exact shape for downstream readers.
+- **The discovery-only guard got sharper, not weaker.** Its ban on `append_ledger` was a proxy for "no posting history", and the studied ledger broke the proxy without touching the rule. The ban moved onto what a posting record would actually contain: the ledger write is now asserted to carry no recipient, no body, no venue. Nothing here posts, drafts, or runs itself on a timer, unchanged.
+
+The module's suite grows from 87 tests to 127, all green.
+
 ## v0.5.0 — reddit lane on RSS, per-lane query budgets — 2026-08-29
 
 Reddit's public `.json` read stopped answering this tool. The lane moves to the Atom feed, and every phrase lane gains a way to spend fewer requests.

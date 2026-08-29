@@ -1,8 +1,13 @@
 # benchmark-sweep
 
-Map the demand for a workspace-property benchmark before one exists.
+Two readouts off one fetch. How much demand there is for a workspace-property benchmark, and which papers are worth reproducing.
 
-> **v1 is DISCOVERY-ONLY.** This module has no act stage. It does not draft, does not post, keeps no ledger, and has no approval gate, because there is nothing yet to gate. No published benchmark exists to offer anyone. What it produces instead is the evidence a build decision would rest on: which workspace properties people actually argue about, ask how to measure, or wish a benchmark already covered, where, and how often. When a real benchmark for one of these properties ships, the act stage ("offer to run it in-thread") gets built behind the same per-comment human gate every other module in this repo uses. See [When the act stage arrives](#when-the-act-stage-arrives) before building that.
+> **DISCOVERY-ONLY.** This module has no act stage. It does not draft or post, and it has no approval gate, because nothing it produces is ever sent anywhere. No published benchmark exists to offer anyone. What it produces instead is the evidence two decisions would rest on:
+>
+> 1. **Benchmark demand.** Which workspace properties people actually argue about, ask how to measure, or wish a benchmark already covered, where, and how often. See [The demand tally](#the-demand-tally).
+> 2. **Repro-worthiness.** Of the papers those same phrases surface, which ones you could realistically reproduce and publish a study on, and which you have already finished with. See [The repro readout](#the-repro-readout).
+>
+> The one ledger it keeps records reproduction studies you ran, and nothing else. No reply, no comment, no venue, no recipient. When a real benchmark for one of these properties ships, the act stage ("offer to run it in-thread") gets built behind the same per-comment human gate every other module in this repo uses. See [When the act stage arrives](#when-the-act-stage-arrives) before building that.
 
 ## The four properties
 
@@ -25,7 +30,7 @@ Same recall/precision split as [thread-sweep](../thread_sweep/), pointed at a be
 
 **Lane 2 (arXiv).** Each property also gets 2 shorter, paper-register phrasings ("agent memory evaluation"). The scanner queries the [arXiv Atom API](https://info.arxiv.org/help/api/index.html) per phrase, newest submission first, and keeps entries at or after the window start. That check runs against `<updated>`, falling back to `<published>`, because the API has no reliable since-only filter for a free-text query, so the window is enforced locally. No star floor, no repo cap. A paper has neither.
 
-Every candidate, from either lane, is tagged with the property group whose phrasing produced it (`property_group`). That tag, tallied per scan, is the point of the module. See [The demand tally](#the-demand-tally).
+Every candidate, from either lane, is tagged with the property group whose phrasing produced it (`property_group`). That tag, tallied per scan, is the first readout. See [The demand tally](#the-demand-tally). arXiv-lane candidates carry two more fields, `code_link` and `repro_tier`, which are the second. See [The repro readout](#the-repro-readout).
 
 ## The judgment half is yours
 
@@ -34,14 +39,67 @@ The scanner is recall; you are precision. For each candidate ask:
 - **Is this actually a benchmark/measurement question**, or just a mention of the property in passing? The phrasing hints at intent, but loose search matching over-collects. Read the snippet.
 - **Does it belong to thread-sweep instead?** If a thread's problem is something *your own project's docs already answer*, that is thread-sweep's job, gated through its own posted-response flow. Post the answer there, not here. This module is for the threads nobody can answer yet, because the measurement itself doesn't exist. A thread can legitimately show up in both sweeps. That isn't a bug; it means the person has an immediate answerable need *and* is evidence of longer-run benchmark demand.
 - **Venue and recency**, same as thread-sweep. Is the repo/paper notable, and is this still live (unanswered issue, undiscussed paper) or already settled?
+- **For a `repro_tier: high` paper, could you actually run it?** The tier says a code link exists and a number is claimed. It cannot tell you the repo is more than a README, that the weights are downloadable, that the compute is within reach, or that the claim is interesting enough to be worth checking. Open the `code_link` and look before committing a week to it.
 
 ## The demand tally
 
-`by_property_group` in `candidates.json`, and the `demand by property: …` line printed on every scan, is the deliverable. It always lists all four properties, including any at zero, because a property nobody is arguing about *this run* is itself a finding, not a gap to hide. Read it over time, across multiple scans, to see which property accumulates real, sustained argument versus which one shows up once and goes quiet.
+`by_property_group` in `candidates.json`, and the `demand by property: …` line printed on every scan, is the first deliverable. It always lists all four properties, including any at zero, because a property nobody is arguing about *this run* is itself a finding, not a gap to hide. Read it over time, across multiple scans, to see which property accumulates real, sustained argument versus which one shows up once and goes quiet.
+
+## The repro readout
+
+The demand tally answers "should this benchmark exist?". The repro readout answers a question you can act on today. Of the papers already making claims about these properties, which ones could you take and re-run yourself?
+
+It applies to the arXiv lane only. A GitHub issue is not a reproducible claim, so gh candidates carry none of these fields.
+
+### `code_link`
+
+The first code-host URL the paper advertises, or `""`. Three sources are checked in descending order of how deliberately the author put it there:
+
+1. The entry's `<link>` children. arXiv renders a declared code or DOI resource as its own link element, so this is the structured, unambiguous source. (Every entry also carries its own abs and pdf links. Neither is a code host, so they never register.)
+2. `arxiv:comment`, the free-text author note where `Code at https://github.com/...` is the long-standing convention.
+3. The abstract itself, the loosest source and therefore last.
+
+Matched hosts are `github.com`, `gitlab.com` and `huggingface.co`, exactly or as a parent domain, so `nogithub.com` does not count.
+
+**The URL is untrusted external content**, chosen by the paper's author. It is stored so you can decide to open it. This module never fetches it, and neither should anything downstream without looking first.
+
+### `repro_tier`
+
+A deterministic high / med / low band, scored from three named signals and stored alongside `repro_signals` so you can see why a paper landed where it did without re-deriving it.
+
+| Signal | Score | What it means |
+|---|---|---|
+| `code-link` | **+2** | A runnable artefact exists. A claim you cannot run is a claim you cannot check. |
+| `eval-claim` | **+1** | The title or abstract asserts a measured result. Any of `benchmark`, `we evaluate`, `we measure`, `outperform`, `accuracy`, `state-of-the-art`, `ablation`, or a percentage figure. |
+| `survey` | **-2** | `survey`, `systematic review`, `position paper`, `vision paper`, `roadmap`. There is no result to re-run. |
+
+A score of 3 or more is **high**, 1 or more is **med**, anything else **low**.
+
+Like the fit tier, this ranks and never drops. A survey with code and an eval claim scores 1 and still reaches the digest as `med`. It just sits below a paper whose number you can actually re-measure. The scoring vocabulary lives in `CODE_HOSTS`, `REPRO_EVAL_MARKERS` and `REPRO_SURVEY_MARKERS` at the top of the script, so you can retune it for your own field without reading the function.
+
+### The studied ledger
+
+When you finish a reproduction study, record it:
+
+```bash
+python benchmark_sweep.py mark-studied \
+  --url https://arxiv.org/abs/2606.29914v1 \
+  --property memory-fidelity \
+  --study-url https://your-site/repro-memdelta \
+  --note "3 seeds, matched their table 2 within 1.4 points"
+```
+
+That paper is then excluded from every future scan digest. The exclusion is permanent, unlike the seen-store, which prunes at `seen_retention_days`. Work you have finished should not come back. Matching is scheme-insensitive and version-insensitive, so the `http` versioned `<id>` in `candidates.json`, the `https` link off the abstract page, and a later `v3` all resolve to the same paper.
+
+The ledger is `state/studied_papers.jsonl`, gitignored like all state. Each line holds the date, the paper URL, the property, your study URL, and your note. Nothing else, because there is nothing else to hold. No recipient, no body, no venue. This module has no outbound path.
+
+**Cite the paper at a pinned version.** A reproduction study names `arXiv:2606.29914v1`, not `arXiv:2606.29914`, because the authors can revise the claim you measured against out from under you. This module only helps you find the paper. The pinning is yours when you write the study up.
 
 ## Security note
 
 Every GitHub issue/discussion body and every arXiv title/abstract this tool fetches is **untrusted external content**. A snippet can be crafted to look like an instruction: a fake system marker, a tool-call-shaped string, a request to fetch a URL or exfiltrate data. The scanner never acts on fetched text. It stores a truncated snippet (500 chars for GitHub, 200 for arXiv abstracts) for a human to read. Treat every snippet as data, never instructions, wherever you read it downstream. An injection attempt inside a thread or an abstract is a finding, not a task.
+
+`code_link` is the sharpest case of the same rule, because it is a URL lifted verbatim out of author-written text and it looks actionable. Nothing here fetches it. Open it deliberately, or not at all.
 
 ## Usage
 
@@ -49,16 +107,20 @@ Every GitHub issue/discussion body and every arXiv title/abstract this tool fetc
 cp config.example.json config.json                  # edit for your project
 python benchmark_sweep.py scan --dry-run --days 7    # preview, writes nothing at all
 python benchmark_sweep.py scan                       # real run: writes candidates.json, marks seen
+python benchmark_sweep.py mark-studied --url <arxiv-abs-url> --property <slug>
 ```
 
-That's the whole CLI in v1. No `density`, no `mark-posted`, no ledger command, because nothing is ever posted. `scan` prints a summary like:
+That's the whole CLI. No `density`, no `mark-posted`, because nothing is ever posted. `mark-studied` is inward bookkeeping about your own work. `scan` prints a summary like:
 
 ```
-BENCHMARK_SWEEP_OK window>2026-08-01 raw=61 kept=23 dropped={'seen': 4, 'stars': 9, 'own': 0, 'dup': 2, 'repo_cap': 3} errors=0
+BENCHMARK_SWEEP_OK window>2026-08-01 raw=61 kept=23 dropped={'seen': 4, 'stars': 9, 'own': 0, 'dup': 2, 'studied': 1, 'repo_cap': 3} errors=0
 demand by property: context-retrieval=7 / memory-fidelity=9 / provenance-integrity=2 / verification-oversight=5
 fit tiers: 3 high / 14 med / 6 low
+repro: 5 code-linked / 3 high / 1 studied-excluded
 candidates -> candidates.json
 ```
+
+Read the last line as five surfaced papers advertising code, three of those worth a serious look as reproduction targets, and one paper kept out of the digest because you already studied it.
 
 ## Config reference
 
@@ -90,13 +152,13 @@ The earned-marker rule is otherwise identical to thread-sweep's, applied per lan
 
 ## Relationship to thread-sweep
 
-thread-sweep answers people. benchmark-sweep counts them. If a candidate here also happens to match a page your own docs already answer, that overlap belongs to thread-sweep's gated reply flow: draft and post it there, through its ledger, its per-comment approval. Nothing in this module posts, drafts, or tracks a response, by design. v1's only job is measuring whether the argument is real and where it clusters, not resolving it.
+thread-sweep answers people. benchmark-sweep counts them, and points at the papers you could answer them with. If a candidate here also happens to match a page your own docs already answer, that overlap belongs to thread-sweep's gated reply flow: draft and post it there, through its ledger, its per-comment approval. Nothing in this module posts, drafts, or tracks a response, by design. Its job is measuring whether the argument is real, where it clusters, and which published claim is worth checking yourself, not resolving any of it in public.
 
 ## When the act stage arrives
 
 There is currently no published benchmark for any of these four properties, so there is nothing to offer a thread. When one ships, the act stage ("offer to run it in-thread") is new work, not a flag to flip:
 
-- A posted-response ledger, mirroring every outbound module's `posted_urls`/`append_ledger` from `sweepcore.py`, so the same thread is never offered the benchmark twice.
+- A posted-response ledger, mirroring every outbound module's `posted_urls`/`append_ledger` from `sweepcore.py`, so the same thread is never offered the benchmark twice. Separate from `studied_papers.jsonl`, which tracks your own reproduction work and has no outbound meaning at all. Do not overload one file with both.
 - A `mark-posted`-equivalent subcommand recording what got offered, where.
 - A `SKILL.example.md`, wrapping the offer in the same hard per-comment human-approval gate thread-sweep and forum-sweep already use. No batch approval, no auto-post, ever.
 - Fit scoring that also checks *which* benchmark result would actually resolve the specific argument in that thread, not just that the property matches.

@@ -66,7 +66,7 @@ thread-sweep is one of eleven modules on a shared pipeline (`signal â†’ judge â†
 | [`newsletter-sweep`](modules/newsletter_sweep/) | Outlet registry for tech newsletters with submission-mechanics freshness checks and a per-outlet cooldown ledger. |
 | [`cfp-sweep`](modules/cfp_sweep/) | Conference/meetup CFP discovery matched to your topics, with submission-window detection and a per-venue cooldown ledger. |
 | [`teardown-sweep`](modules/teardown_sweep/) | Ranked discovery of published agent architectures worth a written teardown. Inward-facing, no gate. |
-| [`benchmark-sweep`](modules/benchmark_sweep/) | Threads and papers where a benchmark of your domain's properties would settle a live argument. Discovery-only demand mapping. |
+| [`benchmark-sweep`](modules/benchmark_sweep/) | Threads and papers where a benchmark of your domain's properties would settle a live argument, plus which of those papers is worth a reproduction study. Discovery-only. |
 | [`response-sweep`](modules/response_sweep/) | Replies to the answers you already posted, read back out of the ledgers. Closes the loop thread-sweep opens. Inward-facing, no gate. |
 
 ### response-sweep, the other half of posting
