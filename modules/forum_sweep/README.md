@@ -38,11 +38,21 @@ One adapter per source, all returning the same candidate schema (`url`, `title`,
 "lobsters": { "tags": ["ai", "vibecoding"] }
 ```
 
-**Reddit (opt-in, discovery-only).** Off by default. A public `r/<sub>/search.json` read for *finding* threads only, never for posting. Read the etiquette section before you flip `enabled` to `true`.
+**Reddit (opt-in, discovery-only).** Off by default. A public `r/<sub>/search.rss` read for *finding* threads only, never for posting. The `.json` form this lane used through v0.4.0 now returns a hard HTTP 403 to any non-browser user agent, and `old.reddit.com` redirects the same query to a login wall, so the transport is the per-subreddit Atom feed: same query, same time bucket, parsed with the stdlib XML parser like the Medium lane. Read the etiquette section before you flip `enabled` to `true`.
 
 ```json
-"reddit": { "enabled": false, "subs": ["LocalLLaMA", "ClaudeAI", "AI_Agents", "LLMDevs"] }
+"reddit": {
+  "enabled": false,
+  "subs": ["LocalLLaMA", "ClaudeAI", "AI_Agents", "LLMDevs"],
+  "groups": ["context-budget", "memory-hygiene", "agent-autonomy"]
+}
 ```
+
+Two things the feed transport changes, both worth knowing before you read a reddit digest.
+
+**No engagement numbers.** An Atom entry carries no score and no comment count, so every reddit candidate arrives with `score_or_stars: 0` and `comments: 0`. A zero comment count reads as an answer-gap signal in the shared ranking, and it reads that way for every candidate in the lane at once. Ordering *within* reddit is unaffected. The only thing that moves is reddit's standing against the lanes that do report real counts, so open the thread before trusting a reddit tier.
+
+**A tight request budget.** Anonymous feed reads start returning HTTP 429 after roughly 20 quick requests. Two guards: the lane paces itself at a floor of 2 seconds between requests whatever `request_delay_seconds` says (no other lane is slowed), and the optional `groups` key narrows it to a subset of your `query_groups`. One request is spent per sub per phrase, so trimming groups is what actually keeps the lane inside the budget. Omit `groups` to run every group, as before.
 
 **Stack Exchange (opt-in, thin adapter).** Off by default. [ROADMAP.md](../../ROADMAP.md) explains why a dedicated `stack-sweep` module isn't planned — Stack Overflow's public-question volume is down roughly 95% off its peak, and the venues that absorbed the spillover are already covered by thread-sweep and forum-sweep — but a thin adapter here still catches the residual long tail. Each configured `site` (the API's short slug, e.g. `stackoverflow`, `ai` for ai.stackexchange.com — not the hostname) runs every query phrase against `search/excerpts`, windowed server-side by `fromdate` and floored by `min_score`. Candidates surface both questions and answers; the `is_answered` field on each feeds the same unanswered-preferred ranking the other lanes get for free.
 
@@ -107,7 +117,7 @@ HN enforces at the *domain* level, silently. A single read of your domain that a
 
 ### Reddit: shadowban invisibility + OAuth gating
 
-Reddit is **disabled by default, discovery-only, manual.** Two reasons. First, shadowbans are invisible: a removed comment still looks live to the account that posted it, so a "posted" ledger entry for Reddit can be a lie. **Always verify a Reddit post out-of-band** (open the comment in a logged-out browser) before trusting the ledger. Second, the full Reddit Data API is OAuth-gated and pre-approval-gated; the public `.json` read this tool uses is unauthenticated, best-effort, and may be rate-limited or blocked at any time. Posting through it is never automated. Per-sub self-promotion rules are strict and the link is usually best omitted entirely.
+Reddit is **disabled by default, discovery-only, manual.** Two reasons. First, shadowbans are invisible: a removed comment still looks live to the account that posted it, so a "posted" ledger entry for Reddit can be a lie. **Always verify a Reddit post out-of-band** (open the comment in a logged-out browser) before trusting the ledger. Second, the full Reddit Data API is OAuth-gated and pre-approval-gated; the public `search.rss` feed read this tool uses is unauthenticated, best-effort, rate-limited (hence the 2-second pacing floor), and may be blocked at any time, exactly as the `.json` read it replaced eventually was. Posting through it is never automated. Per-sub self-promotion rules are strict and the link is usually best omitted entirely.
 
 ### Lobsters: invite-gate + <25% self-promo ceiling
 
@@ -146,7 +156,7 @@ python forum_sweep.py density                     # recent posting counts
 python forum_sweep.py mark-posted --url <thread-url> --pattern <slug> --comment-file reply.md
 ```
 
-Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, `xml.etree.ElementTree` for the Medium RSS lane, no third-party deps and no auth for the Discourse / HN / Lobsters lanes.
+Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, `xml.etree.ElementTree` for the Medium and Reddit feed lanes, no third-party deps and no auth for the Discourse / HN / Lobsters lanes.
 
 ## Config reference
 
@@ -154,6 +164,7 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 |---|---|---|
 | `subject` | `{name, url}` of the project you're answering for | required |
 | `query_groups` | `pattern-slug → [phrases]`, reusable across sources | required |
+| `sources.<lane>.groups` | narrow one phrase lane to these `query_groups` slugs (`discourse`, `hn`, `reddit`, `stackexchange`, `lemmy`; the tag-driven lanes ignore it). An unknown slug warns on stderr and is skipped | all groups |
 | `sources.discourse.instances` | Discourse hosts to search | `[]` |
 | `sources.hn.enabled` | run the Hacker News lane | `false` |
 | `sources.lobsters.tags` | Lobsters tags to pull | `[]` |

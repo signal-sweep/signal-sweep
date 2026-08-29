@@ -21,6 +21,12 @@ Thumbs.db
 
 # Additional private sweep configs and their state (one per target).
 # The example config is the public worked example; these are live targeting.
+# Both separators: the dotted form was the original convention, but live
+# profiles are named with underscores (candidates_leadership.json,
+# state_leadership/) and were committable until these lines existed.
 config.*.json
+config_*.json
 candidates.*.json
+candidates_*.json
 state-*/
+state_*/

@@ -60,13 +60,18 @@
       ]
     },
     "reddit": {
-      "_caveat": "DISCOVERY-ONLY and opt-in. Governed by the Reddit Data API terms; best-effort public JSON read for discovery only. NEVER automate posting. Reddit shadowban removals are INVISIBLE, so a posted-ledger entry for Reddit can be a lie — verify out-of-band before trusting it. Leave enabled=false unless you understand this.",
+      "_caveat": "DISCOVERY-ONLY and opt-in. Governed by the Reddit Data API terms; best-effort public read for discovery only. NEVER automate posting. Reddit shadowban removals are INVISIBLE, so a posted-ledger entry for Reddit can be a lie — verify out-of-band before trusting it. Transport is the search.rss Atom feed since v0.5.0: the public .json read is 403-walled for non-browser user agents as of 2026-08. Two consequences. The feed carries no score or comment count, so every candidate is emitted with zeroes for both. Anonymous reads return HTTP 429 after roughly 20 quick requests, so the lane paces itself at a 2-second floor and `groups` narrows it to a subset of query_groups to keep the request budget small. Leave enabled=false unless you understand this.",
       "enabled": false,
       "subs": [
         "LocalLLaMA",
         "ClaudeAI",
         "AI_Agents",
         "LLMDevs"
+      ],
+      "groups": [
+        "context-budget",
+        "memory-hygiene",
+        "agent-autonomy"
       ]
     },
     "stackexchange": {

@@ -92,8 +92,10 @@ USER_AGENT = "signal-sweep forum-sweep (https://github.com/signal-sweep/signal-s
 HTTP_TIMEOUT = 20
 
 # Polite inter-request throttle (seconds), set from config at scan start.
-# Discourse anonymous /search.json and Reddit rate-limit bursts hard (HTTP 429);
-# a small delay keeps the primary lanes usable. 0 disables.
+# Discourse anonymous /search.json rate-limits bursts hard (HTTP 429); a small
+# delay keeps the primary lanes usable. 0 disables. The reddit lane paces
+# itself above this floor (REDDIT_MIN_REQUEST_DELAY) because it 429s far
+# sooner, and only that lane pays the cost.
 REQUEST_DELAY = 0.0
 
 
@@ -242,13 +244,20 @@ def http_get_json(url, errors, label):
     return parsed
 
 
-def http_get_xml(url, errors, label):
+def http_get_xml(url, errors, label, delay=None):
     """GET a URL and parse XML. Fail-soft, the same shape as http_get_json:
     any error appends to errors[] and returns None so the caller continues to
     the next tag/instance. Delegates the fetch to sweepcore.http_get, which
-    adds 429/503 Retry-After backoff."""
-    if REQUEST_DELAY > 0:
-        time.sleep(REQUEST_DELAY)
+    adds 429/503 Retry-After backoff.
+
+    `delay` overrides the module-wide REQUEST_DELAY throttle for this one call,
+    so a lane with a tighter rate limit than the rest of the module can pace
+    itself without the operator having to slow every other lane to match. Only
+    the reddit lane passes it today (see REDDIT_MIN_REQUEST_DELAY).
+    """
+    wait = REQUEST_DELAY if delay is None else delay
+    if wait > 0:
+        time.sleep(wait)
     status, body, err = http_get(
         url,
         timeout=HTTP_TIMEOUT,
@@ -271,6 +280,41 @@ def http_get_xml(url, errors, label):
     return root
 
 
+# --- per-lane query-group selection ------------------------------------------
+
+
+def _lane_query_groups(cfg, lane):
+    """The query_groups a phrase-driven lane iterates.
+
+    `sources.<lane>.groups` optionally narrows one lane to a subset of the
+    shared query_groups. Every phrase lane costs one request per sub/site/
+    instance x phrase, so a lane with a hard request budget (reddit's anonymous
+    429 threshold) needs a way to stay inside it that does not shrink
+    query_groups for the lanes with no such limit. Absent, empty, or not a list
+    means all groups -- the behaviour every lane had before this key existed.
+
+    An unknown slug is a config typo rather than a silent no-op: it warns once
+    on stderr and is skipped, so a mistyped group cannot quietly turn a lane
+    into a narrower scan than the operator thinks they configured.
+    """
+    groups = cfg["query_groups"]
+    wanted = ((cfg.get("sources") or {}).get(lane) or {}).get("groups")
+    if not isinstance(wanted, list) or not wanted:
+        return groups
+    selected = {}
+    for slug in wanted:
+        slug = str(slug).strip()
+        if slug in groups:
+            selected[slug] = groups[slug]
+        else:
+            print(
+                f"WARN {lane}: sources.{lane}.groups names '{slug}', which is not "
+                "a query_groups slug. Skipping it.",
+                file=sys.stderr,
+            )
+    return selected
+
+
 # --- adapters: one per source, all returning the shared candidate schema -----
 
 
@@ -281,13 +325,14 @@ def discourse_adapter(cfg, since_dt, errors):
     results = []
     src = cfg["sources"].get("discourse") or {}
     instances = src.get("instances") or []
+    groups = _lane_query_groups(cfg, "discourse")
     for instance in instances:
         host = instance.strip().rstrip("/")
         if not host:
             continue
         if "://" not in host:
             host = "https://" + host
-        for pattern, phrases in cfg["query_groups"].items():
+        for pattern, phrases in groups.items():
             for phrase in phrases:
                 q = urllib.parse.quote(phrase)
                 url = f"{host}/search.json?q={q}"
@@ -347,7 +392,7 @@ def hn_adapter(cfg, since_dt, errors):
         return results
     since_epoch = int(since_dt.timestamp())
     min_points = cfg.get("hn_min_points", 0)
-    for pattern, phrases in cfg["query_groups"].items():
+    for pattern, phrases in _lane_query_groups(cfg, "hn").items():
         for phrase in phrases:
             q = urllib.parse.quote(phrase)
             url = (
@@ -435,20 +480,123 @@ def lobsters_adapter(cfg, since_dt, errors):
     return results
 
 
+# Reddit's search feed is Atom, with every element in the Atom default
+# namespace (confirmed live 2026-08-29: the <feed> root declares Atom plus
+# a media: prefix this adapter does not read).
+_REDDIT_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+# Pacing floor for the reddit lane only. The anonymous feed read starts
+# returning HTTP 429 after roughly 20 quick requests (observed 2026-08-29),
+# far sooner than any other lane in this module, and one lane's limit is no
+# reason to slow the others -- so this floors reddit's own pace while
+# request_delay_seconds keeps governing everything else. Paired with the
+# sources.reddit.groups whitelist, which caps how many requests the lane
+# makes at all (subs x phrases in the selected groups).
+REDDIT_MIN_REQUEST_DELAY = 2.0
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _collapse_ws(text):
+    """Squeeze runs of whitespace to single spaces. Reddit's entry content is
+    pretty-printed HTML, so stripping its tags leaves ragged indentation;
+    make_candidate flattens newlines but keeps the runs."""
+    return _WS_RE.sub(" ", text or "").strip()
+
+
+def _atom_iso(stamp):
+    """Normalise an Atom timestamp to ISO-8601 through one parse.
+
+    Reddit already emits ISO (`2026-08-29T12:01:04+00:00`, confirmed live), so
+    this is not a conversion the way _rfc822_to_iso is for Medium -- it is
+    shape insurance. cmd_scan ranks on `created` as a STRING, and a bare `Z`
+    suffix sorts apart from the identical `+00:00` instant. Fails open to ""
+    on anything unparseable, which _within_window then keeps, matching the
+    fail-open contract every other lane's timestamps have.
+    """
+    if not stamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(stamp.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+def _reddit_entry_to_candidate(entry, sub, pattern, since_dt):
+    """One Atom <entry> to the shared candidate schema, or None to skip it.
+
+    Defensive on every field: this is untrusted external content, and a single
+    entry missing a link or carrying an unreadable timestamp must cost that
+    entry only, never the rest of the sub's results.
+    """
+    link = entry.find(f"{_REDDIT_ATOM_NS}link")
+    # The permalink is an href attribute, not element text, and it arrives
+    # clean -- no tracking query string to strip the way Medium's links need.
+    href = link.get("href") if link is not None else None
+    if not href:
+        return None
+    created = _atom_iso(
+        entry.findtext(f"{_REDDIT_ATOM_NS}published")
+        or entry.findtext(f"{_REDDIT_ATOM_NS}updated")
+        or ""
+    )
+    if not _within_window(created, since_dt):
+        return None
+    return make_candidate(
+        url=href,
+        title=(entry.findtext(f"{_REDDIT_ATOM_NS}title") or "").strip(),
+        created=created,
+        source=f"r/{sub}",
+        # The feed carries no score and no comment count -- see the adapter
+        # docstring for what that costs the ranking.
+        score_or_stars=0,
+        comments=0,
+        # <content type="html"> holds entity-encoded markup; _clean_se_excerpt
+        # unescapes then strips tags, the same pass the SE/Medium/Lemmy lanes
+        # already share.
+        snippet=_collapse_ws(
+            _clean_se_excerpt(entry.findtext(f"{_REDDIT_ATOM_NS}content") or "")
+        ),
+        pattern=pattern,
+        lane="reddit",
+    )
+
+
 def reddit_adapter(cfg, since_dt, errors):
     """Reddit — DISCOVERY-ONLY, opt-in (gated behind sources.reddit.enabled,
     default FALSE).
 
+    Transport is the public per-subreddit Atom feed:
+    GET /r/<sub>/search.rss?q=<phrase>&restrict_sr=1&sort=new&t=<bucket>.
+    The .json read this lane used through v0.4.0 is 403-walled as of 2026-08
+    (a hard HTTP 403 for non-browser user agents; old.reddit.com answers the
+    same query with a 302 to a login wall), while the .rss form returns 200
+    for this module's own descriptive UA. Same query, same `t` bucket, parsed
+    with the stdlib ElementTree like the Medium lane.
+
+    What the transport costs: an Atom entry carries NO score and NO comment
+    count, so every candidate here is emitted with score_or_stars=0 and
+    comments=0. relevance_tier reads comments==0 as an answer-gap signal, so
+    every reddit candidate scores that signal identically. Being uniform, it
+    cannot reorder anything WITHIN the lane; it only lifts reddit against the
+    lanes that do carry real counts. Read a reddit tier as "unranked by
+    engagement", and read the thread itself before judging the answer-gap.
+
     ToS / safety caveat (read before enabling):
       * Governed by the Reddit Data API terms. This is a best-effort public
-        JSON read for DISCOVERY ONLY. Do NOT automate posting through it.
+        feed read for DISCOVERY ONLY. Do NOT automate posting through it.
       * Reddit shadowbans are INVISIBLE: a removed comment still looks live to
         the account that posted it. A posted-ledger entry for Reddit can
         therefore be a lie — verify any Reddit post out-of-band (logged-out
         view of the comment) before trusting the ledger.
       * The full Data API is OAuth-gated and pre-approval-gated; this public
-        .json read is unauthenticated and may be rate-limited or blocked at any
-        time. Fail-soft if so.
+        feed read is unauthenticated and rate-limited (see
+        REDDIT_MIN_REQUEST_DELAY) and may be blocked at any time. Fail-soft
+        if so: a 429 or an unparseable body is a lane error like any other,
+        which holds this lane's window for the next run.
     """
     results = []
     src = cfg["sources"].get("reddit") or {}
@@ -458,54 +606,29 @@ def reddit_adapter(cfg, since_dt, errors):
     # silently truncated any window longer than a month while the digest
     # still advertised the full range. Pick the smallest covering bucket.
     t_param = _reddit_time_param(since_dt, datetime.now(timezone.utc))
+    delay = max(REQUEST_DELAY, REDDIT_MIN_REQUEST_DELAY)
+    groups = _lane_query_groups(cfg, "reddit")
     subs = src.get("subs") or []
     for sub in subs:
         sub = str(sub).strip()
         if not sub:
             continue
-        for pattern, phrases in cfg["query_groups"].items():
+        for pattern, phrases in groups.items():
             for phrase in phrases:
                 q = urllib.parse.quote(phrase)
                 url = (
-                    f"https://www.reddit.com/r/{urllib.parse.quote(sub)}/search.json"
+                    f"https://www.reddit.com/r/{urllib.parse.quote(sub)}/search.rss"
                     f"?q={q}&restrict_sr=1&sort=new&t={t_param}"
                 )
-                data = http_get_json(url, errors, f"reddit r/{sub} {pattern}")
-                if not data:
+                root = http_get_xml(
+                    url, errors, f"reddit r/{sub} {pattern}", delay=delay
+                )
+                if root is None:
                     continue
-                children = ((data.get("data") or {}).get("children")) or []
-                for child in children:
-                    post = child.get("data") or {}
-                    permalink = post.get("permalink")
-                    if not permalink:
-                        continue
-                    created = post.get("created_utc")
-                    created_iso = ""
-                    if created:
-                        try:
-                            created_ts = float(created)
-                        except (TypeError, ValueError):
-                            created_ts = None
-                        if created_ts is not None:
-                            created_dt = datetime.fromtimestamp(
-                                created_ts, tz=timezone.utc
-                            )
-                            if created_dt < since_dt:
-                                continue
-                            created_iso = created_dt.isoformat()
-                    results.append(
-                        make_candidate(
-                            url=f"https://www.reddit.com{permalink}",
-                            title=post.get("title", ""),
-                            created=created_iso,
-                            source=f"r/{sub}",
-                            score_or_stars=post.get("score", 0),
-                            comments=post.get("num_comments", 0),
-                            snippet=post.get("selftext", ""),
-                            pattern=pattern,
-                            lane="reddit",
-                        )
-                    )
+                for entry in root.findall(f"{_REDDIT_ATOM_NS}entry"):
+                    cand = _reddit_entry_to_candidate(entry, sub, pattern, since_dt)
+                    if cand is not None:
+                        results.append(cand)
     return results
 
 
@@ -595,11 +718,12 @@ def stackexchange_adapter(cfg, since_dt, errors):
     sites = src.get("sites") or []
     min_score = src.get("min_score", 0)
     since_epoch = int(since_dt.timestamp())
+    groups = _lane_query_groups(cfg, "stackexchange")
     for site in sites:
         site = str(site).strip()
         if not site:
             continue
-        for pattern, phrases in cfg["query_groups"].items():
+        for pattern, phrases in groups.items():
             for phrase in phrases:
                 q = urllib.parse.quote(phrase)
                 url = (
@@ -947,11 +1071,12 @@ def lemmy_adapter(cfg, since_dt, errors):
         return results
     instances = src.get("instances") or []
     min_score = src.get("min_score", 0)
+    groups = _lane_query_groups(cfg, "lemmy")
     for instance in instances:
         instance = str(instance).strip().rstrip("/")
         if not instance:
             continue
-        for pattern, phrases in cfg["query_groups"].items():
+        for pattern, phrases in groups.items():
             for phrase in phrases:
                 q = urllib.parse.quote(phrase)
                 url = (
