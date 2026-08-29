@@ -4,6 +4,23 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
+## v0.5.0 — reddit lane on RSS, per-lane query budgets — 2026-08-29
+
+Reddit's public `.json` read stopped answering this tool. The lane moves to the Atom feed, and every phrase lane gains a way to spend fewer requests.
+
+## forum-sweep
+
+- **Reddit lane rebuilt on `search.rss`.** The unauthenticated `r/<sub>/search.json` read now returns a hard HTTP 403 to non-browser user agents, and `old.reddit.com` redirects the same query to a login wall, so the lane was fetching nothing. `r/<sub>/search.rss` answers 200 for the module's own descriptive UA (verified live 2026-08-29) with the same query, the same `t` time bucket, and the same held-window behaviour on failure. Parsed with the stdlib XML parser, like the Medium lane. Still discovery-only, still opt-in, still no posting path.
+- **What the feed costs.** An Atom entry carries no score and no comment count, so reddit candidates now emit `score_or_stars: 0` and `comments: 0`. A zero comment count reads as an answer-gap signal for every candidate in the lane at once, so ranking within reddit is unchanged; only reddit's standing against the lanes that report real counts moves. Documented in the adapter, the module README, and the example config rather than faked with placeholder numbers.
+- **Pacing floor.** Anonymous feed reads start returning HTTP 429 after roughly 20 quick requests, so the reddit lane now sleeps at least 2 seconds between its own requests whatever `request_delay_seconds` is set to. No other lane is slowed by it.
+- **`sources.<lane>.groups`.** An optional per-lane whitelist of `query_groups` slugs, wired into every phrase-driven lane (`discourse`, `hn`, `reddit`, `stackexchange`, `lemmy`; the tag-driven lanes ignore it). Omit it and the lane runs every group exactly as before. An unknown slug warns once on stderr and is skipped, so a typo cannot quietly narrow a scan. This is what holds reddit's sub-by-phrase request count inside its budget without shrinking `query_groups` for the lanes that have no such limit.
+
+## Fixes
+
+- `.gitignore` now covers the underscore form of the private-profile patterns (`candidates_*.json`, `state_*/`, `config_*.json`). Only the dotted form was ignored, and live profiles are named with underscores, so a real targeting config and its state were committable.
+
+forum-sweep's suite grows from 121 tests to 152, all green.
+
 ## v0.4.0 — four new modules, eight forum lanes — 2026-08-26
 
 The toolkit grows from six modules to ten, and forum coverage from four lanes to eight. Discovery automates; every outbound act stays individually human-gated, unchanged.

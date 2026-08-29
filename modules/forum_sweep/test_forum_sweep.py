@@ -146,12 +146,24 @@ class StatePathsTests(unittest.TestCase):
 class RedditOptInTests(unittest.TestCase):
     def test_reddit_adapter_disabled_by_default_makes_no_call(self):
         # No sources.reddit.enabled flag -> the adapter returns [] without ever
-        # touching the network (discovery-only, opt-in). If it tried to fetch,
-        # http_get is unmocked and would attempt a real call; returning [] first
-        # proves the opt-in gate short-circuits.
+        # touching the network (discovery-only, opt-in). http_get is mocked so a
+        # regression in the gate fails the assertion instead of firing a real
+        # request (and paying the lane's 2s pacing floor) from the test suite.
         cfg = {"sources": {"reddit": {"subs": ["test"]}}, "query_groups": {"p": ["x"]}}
         since = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        self.assertEqual(fs.reddit_adapter(cfg, since, []), [])
+        with mock.patch.object(fs, "http_get") as mocked:
+            self.assertEqual(fs.reddit_adapter(cfg, since, []), [])
+        mocked.assert_not_called()
+
+    def test_reddit_adapter_with_no_subs_makes_no_call(self):
+        cfg = {
+            "sources": {"reddit": {"enabled": True, "subs": []}},
+            "query_groups": {"p": ["x"]},
+        }
+        since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        with mock.patch.object(fs, "http_get") as mocked:
+            self.assertEqual(fs.reddit_adapter(cfg, since, []), [])
+        mocked.assert_not_called()
 
     def test_hn_adapter_disabled_by_default_makes_no_call(self):
         cfg = {"sources": {"hn": {}}, "query_groups": {"p": ["x"]}}
@@ -196,6 +208,393 @@ class RedditTimeParamTests(unittest.TestCase):
         for days, expected in cases:
             since = now - timedelta(days=days)
             self.assertEqual(fs._reddit_time_param(since, now), expected)
+
+
+REDDIT_PERMALINK = (
+    "https://www.reddit.com/r/ClaudeAI/comments/1w1kptd/keeping_agent_memory/"
+)
+
+# <content type="html"> arrives XML-escaped, so the parser sees real HTML only
+# after ElementTree decodes one layer. Doubly-escaped entities (&amp;quot; ->
+# &quot; -> ") are what exercises the html.unescape half of the snippet clean;
+# the SC_OFF/SC_ON comment markers and the <div class="md"> wrapper are on
+# every live reddit selftext entry and exercise the tag-strip half. The ragged
+# indentation before the second paragraph is the whitespace-collapse case.
+REDDIT_CONTENT_HTML = (
+    "&lt;!-- SC_OFF --&gt;&lt;div class=&quot;md&quot;&gt;"
+    "&lt;p&gt;We hit &amp;quot;agent memory&amp;quot; drift &amp;amp; "
+    "stale facts.&lt;/p&gt;\n"
+    "        &lt;p&gt;Second line.&lt;/p&gt;"
+    "&lt;/div&gt;&lt;!-- SC_ON --&gt;"
+)
+REDDIT_CONTENT_TEXT = 'We hit "agent memory" drift & stale facts. Second line.'
+
+
+def _reddit_entry(
+    title="Keeping agent memory current across sessions",
+    href=REDDIT_PERMALINK,
+    published="2026-08-29T12:01:04+00:00",
+    updated="2026-08-29T12:01:04+00:00",
+    content=REDDIT_CONTENT_HTML,
+):
+    """One Atom <entry>, live-shape confirmed 2026-08-29 against
+    https://www.reddit.com/r/<sub>/search.rss: author / category / content /
+    id / link / updated / published / title, in that order, every element in
+    the Atom default namespace. The permalink is the link element's `href`
+    ATTRIBUTE (not element text) and arrives with no tracking query string.
+    Pass href=None or published=None to build the degenerate cases."""
+    link_xml = f'<link href="{href}" />' if href else ""
+    updated_xml = f"<updated>{updated}</updated>" if updated else ""
+    published_xml = f"<published>{published}</published>" if published else ""
+    return (
+        "<entry>"
+        "<author><name>/u/someone</name>"
+        "<uri>https://www.reddit.com/user/someone</uri></author>"
+        '<category term="ClaudeAI" label="r/ClaudeAI"/>'
+        f'<content type="html">{content}</content>'
+        "<id>t3_1w1kptd</id>"
+        f"{link_xml}{updated_xml}{published_xml}"
+        f"<title>{title}</title>"
+        "</entry>"
+    )
+
+
+def _reddit_feed(*entries):
+    """The Atom envelope confirmed live 2026-08-29: an Atom-default-namespace
+    <feed> root that also declares media:, plus feed-level category/updated/
+    id/link/title siblings before the entries. The feed-level <link> is
+    deliberately present -- an entry-scoped `find` must not pick it up."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom" '
+        'xmlns:media="http://search.yahoo.com/mrss/">'
+        '<category term="ClaudeAI" label="r/ClaudeAI"/>'
+        "<updated>2026-08-29T12:39:44+00:00</updated>"
+        "<id>/r/ClaudeAI/search.rss?q=agent+memory&amp;restrict_sr=1</id>"
+        '<link rel="self" href="https://www.reddit.com/r/ClaudeAI/search.rss" '
+        'type="application/atom+xml" />'
+        "<title>search results for agent memory</title>"
+        f"{''.join(entries)}</feed>"
+    )
+
+
+class RedditRssAdapterTests(unittest.TestCase):
+    """The RSS transport (v0.5.0). The public .json read this lane used through
+    v0.4.0 returns a hard HTTP 403 for non-browser user agents as of 2026-08;
+    search.rss answers 200 for the module's own UA."""
+
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def setUp(self):
+        # Every request in this lane pays REDDIT_MIN_REQUEST_DELAY; real sleeps
+        # would push this class alone past a minute. Recorded, never taken.
+        patcher = mock.patch.object(fs.time, "sleep")
+        self.sleeps = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _cfg(self, subs=("ClaudeAI",), enabled=True, query_groups=None, groups=None):
+        src = {"enabled": enabled, "subs": list(subs)}
+        if groups is not None:
+            src["groups"] = groups
+        return {
+            "sources": {"reddit": src},
+            "query_groups": query_groups or {"memory": ["agent memory"]},
+        }
+
+    def _serve(self, feed, status=200, err=None):
+        return lambda url, **kwargs: (status, feed, err)
+
+    def _recorder(self, feed):
+        urls = []
+
+        def record(url, **kwargs):
+            urls.append(url)
+            return 200, feed, None
+
+        return urls, record
+
+    def test_request_url_is_the_rss_search_endpoint(self):
+        urls, record = self._recorder(_reddit_feed())
+        with mock.patch.object(fs, "http_get", record):
+            fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(len(urls), 1)
+        url = urls[0]
+        self.assertNotIn("search.json", url)
+        self.assertIn("https://www.reddit.com/r/ClaudeAI/search.rss?", url)
+        self.assertIn("q=agent%20memory", url)
+        self.assertIn("restrict_sr=1", url)
+        self.assertIn("sort=new", url)
+        # The bucket logic is unchanged from the .json transport: a window
+        # reaching back past a month asks for the year bucket.
+        self.assertIn("&t=year", url)
+
+    def test_entry_maps_onto_the_shared_candidate_schema(self):
+        with mock.patch.object(
+            fs, "http_get", self._serve(_reddit_feed(_reddit_entry()))
+        ):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(len(results), 1)
+        cand = results[0]
+        self.assertEqual(cand["url"], REDDIT_PERMALINK)
+        self.assertEqual(cand["title"], "Keeping agent memory current across sessions")
+        self.assertEqual(cand["created"], "2026-08-29T12:01:04+00:00")
+        self.assertEqual(cand["source"], "r/ClaudeAI")
+        self.assertEqual(cand["pattern"], "memory")
+        self.assertEqual(cand["lane"], "reddit")
+
+    def test_engagement_counts_are_structurally_zero(self):
+        # Atom carries neither score nor comment count. Uniform within the
+        # lane, so it cannot reorder reddit against reddit -- documented in the
+        # adapter docstring and the module README rather than faked.
+        with mock.patch.object(
+            fs, "http_get", self._serve(_reddit_feed(_reddit_entry()))
+        ):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["score_or_stars"], 0)
+        self.assertEqual(results[0]["comments"], 0)
+
+    def test_snippet_strips_tags_unescapes_entities_and_collapses_space(self):
+        with mock.patch.object(
+            fs, "http_get", self._serve(_reddit_feed(_reddit_entry()))
+        ):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        snippet = results[0]["snippet"]
+        self.assertEqual(snippet, REDDIT_CONTENT_TEXT)
+        self.assertNotIn("<", snippet)
+        self.assertNotIn("SC_OFF", snippet)
+        self.assertNotIn("&quot;", snippet)
+        self.assertNotIn("  ", snippet)
+
+    def test_permalink_href_is_the_candidate_key_verbatim(self):
+        # The seen-store and the ledger key on `url`, so the permalink must
+        # survive the adapter byte-for-byte or dedup silently stops working.
+        href = "https://www.reddit.com/r/AI_Agents/comments/abc123/some_thread/"
+        entry = _reddit_entry(href=href)
+        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed(entry))):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["url"], href)
+
+    def test_entries_older_than_the_window_are_skipped(self):
+        old = _reddit_entry(
+            href="https://www.reddit.com/r/ClaudeAI/comments/old/x/",
+            published="2020-01-05T00:00:00+00:00",
+            updated="2020-01-05T00:00:00+00:00",
+        )
+        feed = _reddit_feed(old, _reddit_entry())
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual([c["url"] for c in results], [REDDIT_PERMALINK])
+
+    def test_updated_is_the_fallback_when_published_is_absent(self):
+        entry = _reddit_entry(published=None, updated="2026-08-20T09:00:00+00:00")
+        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed(entry))):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["created"], "2026-08-20T09:00:00+00:00")
+
+    def test_z_suffixed_timestamp_normalises_to_the_offset_form(self):
+        # cmd_scan ranks on `created` as a string, so a bare Z and a +00:00
+        # offset must not sort apart.
+        entry = _reddit_entry(published="2026-08-20T09:00:00Z")
+        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed(entry))):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["created"], "2026-08-20T09:00:00+00:00")
+
+    def test_entry_without_a_link_is_skipped_without_killing_the_feed(self):
+        feed = _reddit_feed(_reddit_entry(href=None), _reddit_entry())
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual([c["url"] for c in results], [REDDIT_PERMALINK])
+
+    def test_feed_level_link_is_not_mistaken_for_an_entry_permalink(self):
+        # The envelope carries its own <link rel="self">; an entry-scoped find
+        # must never reach it, or every empty feed would emit a candidate.
+        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results, [])
+
+    def test_rate_limited_response_holds_the_lane(self):
+        # 429 is the expected anonymous-quota failure. It must land in errors[]
+        # so cmd_scan keeps this lane's last_run and re-covers the window.
+        report = fs.LaneReport()
+        with mock.patch.object(
+            fs, "http_get", lambda url, **kwargs: (429, "", "HTTP 429")
+        ):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, report)
+        self.assertEqual(results, [])
+        self.assertEqual(len(report), 1)
+        self.assertIn("reddit r/ClaudeAI memory", report[0])
+        self.assertIn("429", report[0])
+        self.assertFalse(report.clean)
+
+    def test_malformed_xml_response_holds_the_lane(self):
+        # A login or Cloudflare interstitial answers 200 with HTML, not Atom.
+        report = fs.LaneReport()
+        with mock.patch.object(fs, "http_get", self._serve("<html>nope</html")):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, report)
+        self.assertEqual(results, [])
+        self.assertEqual(len(report), 1)
+        self.assertIn("reddit r/ClaudeAI memory", report[0])
+        self.assertIn("unparseable XML", report[0])
+        self.assertFalse(report.clean)
+
+    def test_one_failed_sub_does_not_stop_the_next(self):
+        feed = _reddit_feed(_reddit_entry())
+        calls = []
+
+        def flaky(url, **kwargs):
+            calls.append(url)
+            if "/r/Broken/" in url:
+                return 503, "", "HTTP 503"
+            return 200, feed, None
+
+        report = fs.LaneReport()
+        with mock.patch.object(fs, "http_get", flaky):
+            results = fs.reddit_adapter(
+                self._cfg(subs=("Broken", "ClaudeAI")), self.SINCE, report
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(results), 1)
+        self.assertFalse(report.clean)
+
+    def test_requests_are_paced_at_the_lane_floor(self):
+        cfg = self._cfg(query_groups={"memory": ["agent memory", "memory bloat"]})
+        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
+            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps.call_count, 2)
+        for call in self.sleeps.call_args_list:
+            self.assertGreaterEqual(call.args[0], 2.0)
+            self.assertGreaterEqual(call.args[0], fs.REDDIT_MIN_REQUEST_DELAY)
+
+    def test_floor_wins_over_a_smaller_global_request_delay(self):
+        with mock.patch.object(fs, "REQUEST_DELAY", 0.5):
+            with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
+                fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps.call_args_list[0].args[0], 2.0)
+
+    def test_a_larger_global_request_delay_still_wins(self):
+        # The floor raises reddit's pace, it never lowers an operator's setting.
+        with mock.patch.object(fs, "REQUEST_DELAY", 5.0):
+            with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
+                fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps.call_args_list[0].args[0], 5.0)
+
+    def test_other_lanes_keep_the_global_delay(self):
+        # The floor is reddit-local: raising it must not slow the rest.
+        with mock.patch.object(fs, "REQUEST_DELAY", 0.5):
+            with mock.patch.object(
+                fs, "http_get", lambda url, **kwargs: (200, _reddit_feed(), None)
+            ):
+                fs.medium_adapter(
+                    {
+                        "sources": {"medium": {"enabled": True, "tags": ["ai"]}},
+                        "query_groups": {"memory": ["agent memory"]},
+                    },
+                    self.SINCE,
+                    fs.LaneReport(),
+                )
+        self.assertEqual(self.sleeps.call_args_list[0].args[0], 0.5)
+
+
+class LaneQueryGroupsTests(unittest.TestCase):
+    """sources.<lane>.groups narrows one phrase lane to a subset of the shared
+    query_groups, so a lane with a tight request budget can stay inside it
+    without shrinking query_groups for every other lane."""
+
+    GROUPS = {
+        "memory": ["agent memory"],
+        "context": ["context bloat"],
+        "hooks": ["pretooluse hook"],
+    }
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _cfg(self, source_block):
+        return {"query_groups": dict(self.GROUPS), "sources": {"reddit": source_block}}
+
+    def test_absent_key_selects_every_group(self):
+        selected = fs._lane_query_groups(self._cfg({"enabled": True}), "reddit")
+        self.assertEqual(list(selected), list(self.GROUPS))
+
+    def test_empty_list_selects_every_group(self):
+        selected = fs._lane_query_groups(self._cfg({"groups": []}), "reddit")
+        self.assertEqual(list(selected), list(self.GROUPS))
+
+    def test_missing_source_block_selects_every_group(self):
+        cfg = {"query_groups": dict(self.GROUPS), "sources": {}}
+        self.assertEqual(list(fs._lane_query_groups(cfg, "reddit")), list(self.GROUPS))
+
+    def test_non_list_value_falls_back_to_every_group(self):
+        # A bare string would otherwise iterate character by character.
+        selected = fs._lane_query_groups(self._cfg({"groups": "memory"}), "reddit")
+        self.assertEqual(list(selected), list(self.GROUPS))
+
+    def test_listed_slugs_select_only_those_groups(self):
+        cfg = self._cfg({"groups": ["hooks", "memory"]})
+        selected = fs._lane_query_groups(cfg, "reddit")
+        self.assertEqual(list(selected), ["hooks", "memory"])
+        self.assertEqual(selected["memory"], ["agent memory"])
+
+    def test_unknown_slug_warns_once_on_stderr_and_is_skipped(self):
+        cfg = self._cfg({"groups": ["memory", "typo-slug"]})
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            selected = fs._lane_query_groups(cfg, "reddit")
+        self.assertEqual(list(selected), ["memory"])
+        err = buf.getvalue()
+        self.assertEqual(err.count("WARN"), 1)
+        self.assertIn("typo-slug", err)
+
+    def test_reddit_lane_requests_only_the_whitelisted_groups(self):
+        cfg = {
+            "query_groups": dict(self.GROUPS),
+            "sources": {
+                "reddit": {
+                    "enabled": True,
+                    "subs": ["ClaudeAI"],
+                    "groups": ["memory"],
+                }
+            },
+        }
+        urls = []
+
+        def record(url, **kwargs):
+            urls.append(url)
+            return 200, _reddit_feed(), None
+
+        with mock.patch.object(fs.time, "sleep"):
+            with mock.patch.object(fs, "http_get", record):
+                fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(len(urls), 1)
+        self.assertIn("q=agent%20memory", urls[0])
+
+    def test_hn_lane_requests_only_the_whitelisted_groups(self):
+        cfg = {
+            "query_groups": dict(self.GROUPS),
+            "sources": {"hn": {"enabled": True, "groups": ["hooks", "context"]}},
+        }
+        labels = []
+
+        def record(url, errors, label):
+            labels.append(label)
+            return None
+
+        with mock.patch.object(fs, "http_get_json", record):
+            fs.hn_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(labels, ["hn hooks", "hn context"])
+
+    def test_hn_lane_without_the_key_requests_every_group(self):
+        cfg = {
+            "query_groups": dict(self.GROUPS),
+            "sources": {"hn": {"enabled": True}},
+        }
+        labels = []
+
+        def record(url, errors, label):
+            labels.append(label)
+            return None
+
+        with mock.patch.object(fs, "http_get_json", record):
+            fs.hn_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(labels, ["hn memory", "hn context", "hn hooks"])
 
 
 class NoAutoPostTests(unittest.TestCase):
@@ -1655,6 +2054,73 @@ class NewSourceEarnedStampTests(ScanHarness, unittest.TestCase):
             )
             marks = self._marks(state_file)
             self.assertEqual(marks["stackexchange"], "2026-07-05T00:00:00+00:00")
+
+    def _reddit_body(self):
+        return _reddit_feed(
+            _reddit_entry(published=datetime.now(timezone.utc).isoformat())
+        )
+
+    def test_reddit_disabled_holds_and_makes_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fs, "http_get") as mocked_http:
+                _cfg_path, state_file = self._run(
+                    tmp, "reddit", {"reddit": {"subs": ["ClaudeAI"]}}, mocked_http
+                )
+            mocked_http.assert_not_called()
+            # The lane never ran, so its pre-existing marker must stand.
+            self.assertEqual(self._marks(state_file)["reddit"], self.OLD["reddit"])
+
+    def test_reddit_clean_rss_fetch_earns_a_fresh_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self._reddit_body()
+
+            def ok(url, **kwargs):
+                return 200, body, None
+
+            with mock.patch.object(fs.time, "sleep"):
+                _cfg_path, state_file = self._run(
+                    tmp,
+                    "reddit",
+                    {"reddit": {"enabled": True, "subs": ["ClaudeAI"]}},
+                    ok,
+                )
+            marks = self._marks(state_file)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(marks["reddit"])
+            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
+
+    def test_reddit_rate_limited_fetch_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def throttled(url, **kwargs):
+                return 429, "", "HTTP 429"
+
+            with mock.patch.object(fs.time, "sleep"):
+                _cfg_path, state_file = self._run(
+                    tmp,
+                    "reddit",
+                    {"reddit": {"enabled": True, "subs": ["ClaudeAI"]}},
+                    throttled,
+                    extra_last_run={"reddit": "2026-07-08T00:00:00+00:00"},
+                )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["reddit"], "2026-07-08T00:00:00+00:00")
+
+    def test_reddit_malformed_xml_holds_the_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def interstitial(url, **kwargs):
+                return 200, "<html>login wall</html", None
+
+            with mock.patch.object(fs.time, "sleep"):
+                _cfg_path, state_file = self._run(
+                    tmp,
+                    "reddit",
+                    {"reddit": {"enabled": True, "subs": ["ClaudeAI"]}},
+                    interstitial,
+                    extra_last_run={"reddit": "2026-07-09T00:00:00+00:00"},
+                )
+            marks = self._marks(state_file)
+            self.assertEqual(marks["reddit"], "2026-07-09T00:00:00+00:00")
 
     def test_devto_disabled_holds_and_makes_no_network_call(self):
         with tempfile.TemporaryDirectory() as tmp:
