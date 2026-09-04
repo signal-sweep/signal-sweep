@@ -585,8 +585,17 @@ def _tier_for(cand):
 # --- scan --------------------------------------------------------------
 
 
+def _now():
+    """The live clock, factored out to one call so a test can freeze it
+    (mock.patch.object(cs, "_now", return_value=...)) instead of reading the
+    real date. today, the earned-window marker, and the seen-store retention
+    cutoff all derive from this one call, so freezing it pins every date
+    cmd_scan computes."""
+    return datetime.now(timezone.utc)
+
+
 def cmd_scan(args):
-    now = datetime.now(timezone.utc)
+    now = _now()
     today = now.date()
 
     if args.dry_run:
