@@ -1,0 +1,43 @@
+name: Module or lane idea
+description: A new module, or a new source lane on an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The toolkit is deliberately small. New modules arrive when a real need pulls one
+        in, so the need matters more than the design. Lead with it.
+  - type: textarea
+    id: need
+    attributes:
+      label: The need
+      description: What you were doing by hand, how often, and what it cost you. A concrete instance beats a category.
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Rough shape
+      description: >
+        Where the signal comes from, what a candidate would look like, and what the
+        human decides. Every module runs signal -> judge -> gate -> act -> ledger.
+    validations:
+      required: true
+  - type: dropdown
+    id: outbound
+    attributes:
+      label: Does it produce an outbound action?
+      description: Anything posted, submitted, or emailed needs a per-item human approval gate. Inward-facing modules need none.
+      options:
+        - "Yes: something goes out and needs a gate"
+        - "No: discovery or recall only, nothing goes out"
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: gate
+    attributes:
+      label: The gate
+      options:
+        - label: I understand no auto-post path, batch approval, or scheduler will be merged.
+          required: true

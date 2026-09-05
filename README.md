@@ -102,7 +102,9 @@ See the [thread-sweep](#thread-sweep-the-one-to-start-with) commands above. Ever
 
 ## Contributing
 
-Issues and PRs welcome, module ideas especially. One rule is non-negotiable: nothing that weakens the human gate (auto-post paths, batch approval, schedulers) gets merged. Contributor conventions live in [CLAUDE.md](CLAUDE.md).
+Issues and PRs welcome, module ideas especially. One rule is non-negotiable: nothing that weakens the human gate (auto-post paths, batch approval, schedulers) gets merged. Setup, the test gate and what gets merged are in [CONTRIBUTING.md](CONTRIBUTING.md); the working conventions behind them are in [CLAUDE.md](CLAUDE.md).
+
+Found a security problem? Report it privately, never in an issue. [SECURITY.md](SECURITY.md) has the path and the threat surface worth checking.
 
 ## Built by
 

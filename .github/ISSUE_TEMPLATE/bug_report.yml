@@ -1,0 +1,63 @@
+name: Bug report
+description: A module does not do what its README says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste a real `config.json`, `candidates.json`, or ledger. They carry your
+        posting history and your targeting. Redact before pasting, or paste the shape only.
+
+        Security problems do not go here. See
+        [SECURITY.md](https://github.com/signal-sweep/signal-sweep/blob/main/SECURITY.md).
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options:
+        - thread-sweep
+        - forum-sweep
+        - mention-sweep
+        - list-sweep
+        - placement-health
+        - release-sweep
+        - newsletter-sweep
+        - cfp-sweep
+        - teardown-sweep
+        - benchmark-sweep
+        - response-sweep
+        - sweepcore / shared
+        - docs or repo tooling
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: python thread_sweep.py scan --days 30
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+      description: Include the module's `*_OK` summary line if it printed one, and the traceback if it did not.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `python -V`, `gh --version`, and your OS.
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I ran `python modules/run_tests.py` and reported the result above if it failed.
+        - label: I checked this is not a venue rate limit (HTTP 429) or login wall (403).
+        - label: Nothing I pasted contains a real ledger, token, or private targeting config.
+          required: true
