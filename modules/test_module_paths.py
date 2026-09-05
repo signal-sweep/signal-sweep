@@ -14,8 +14,14 @@ Every module now resolves those paths from its own __file__ via
 sweepcore.resolve_module_path. These tests pin that contract down.
 
 This lives in modules/ rather than inside one module's suite because the
-invariant is cross-module: the whole point is that six modules resolve to six
-different places, which no single module's tests can see.
+invariant is cross-module: the whole point is that every module resolves to its
+own place, which no single module's tests can see.
+
+Coverage is the other half. The tables below name every module directory in
+modules/, and CoverageTests fails if one is missing, so a new module cannot
+join the repo without joining this guard. (It went unnoticed once already: the
+tables guarded six of eleven modules while the other five called
+resolve_module_path unwatched.)
 
 Run: python -m unittest discover -s modules -p 'test_module_paths.py'
 """
@@ -37,25 +43,64 @@ for _sub in sorted(p for p in MODULES_DIR.iterdir() if p.is_dir()):
     if (_sub / f"{_sub.name}.py").exists():
         sys.path.insert(0, str(_sub))
 
+import benchmark_sweep  # noqa: E402
+import cfp_sweep  # noqa: E402
 import forum_sweep  # noqa: E402
 import list_sweep  # noqa: E402
 import mention_sweep  # noqa: E402
+import newsletter_sweep  # noqa: E402
 import placement_health  # noqa: E402
 import release_sweep  # noqa: E402
+import response_sweep  # noqa: E402
 import sweepcore  # noqa: E402
+import teardown_sweep  # noqa: E402
 import thread_sweep  # noqa: E402
 
-# (module, the state filename that module writes) for every module that keeps
-# a state dir and a candidates file.
+# Every module in the repo. CoverageTests holds this to the directories that
+# actually exist, so adding a module without guarding its paths fails the suite.
+ALL_MODULES = (
+    benchmark_sweep,
+    cfp_sweep,
+    forum_sweep,
+    list_sweep,
+    mention_sweep,
+    newsletter_sweep,
+    placement_health,
+    release_sweep,
+    response_sweep,
+    teardown_sweep,
+    thread_sweep,
+)
+
+# (module, the state filename that module writes) for every module whose
+# state_paths returns the (state_dir, state_file, ledger) triple.
 STATEFUL = (
     (thread_sweep, "sweep_state.json"),
     (forum_sweep, "forum_sweep_state.json"),
     (mention_sweep, "mention_sweep_state.json"),
     (list_sweep, "list_state.json"),
+    (benchmark_sweep, "benchmark_sweep_state.json"),
+    (cfp_sweep, "cfp_state.json"),
+    (newsletter_sweep, "newsletter_state.json"),
+    (teardown_sweep, "teardown_state.json"),
 )
 
-# (module, subcommand, the cmd_* attribute that subcommand dispatches to).
-# Used to read back the --config default the module's own parser installs.
+# response_sweep keeps state too, in a different shape: it never posts, so it
+# has no ledger to return and hands back (state_file, pending_file) instead.
+# Same invariant, so it gets its own case rather than an exemption.
+STATE_PAIRS = ((response_sweep, "response_state.json", "pending.json"),)
+
+# The modules that write a candidates file, derived rather than retyped: the
+# three that do not (placement_health, release_sweep, response_sweep) simply
+# have no such key.
+CANDIDATES = tuple(
+    mod for mod in ALL_MODULES if "candidates_file" in getattr(mod, "DEFAULTS", {})
+)
+
+# (module, subcommand, the cmd_* attribute that subcommand dispatches to,
+# the config filename). Used to read back the --config default the module's own
+# parser installs. The subcommand is any one that takes no required arguments;
+# it is mocked out, so which one it is does not matter.
 CONFIG_DEFAULTS = (
     (thread_sweep, "density", "cmd_density", "config.json"),
     (forum_sweep, "density", "cmd_density", "config.json"),
@@ -63,6 +108,11 @@ CONFIG_DEFAULTS = (
     (list_sweep, "log", "cmd_log", "config.json"),
     (release_sweep, "log", "cmd_log", "channels.json"),
     (placement_health, "check", "cmd_check", "placements.json"),
+    (benchmark_sweep, "scan", "cmd_scan", "config.json"),
+    (cfp_sweep, "density", "cmd_density", "config.json"),
+    (newsletter_sweep, "density", "cmd_density", "config.json"),
+    (teardown_sweep, "log", "cmd_log", "config.json"),
+    (response_sweep, "status", "cmd_status", "config.json"),
 )
 
 
@@ -98,8 +148,34 @@ class ForeignCwdTests(unittest.TestCase):
                 self.assertNotIn(here, Path(state_file).parents)
                 self.assertNotIn(here, Path(ledger).parents)
 
+    def test_state_pair_paths_resolve_beside_the_module_not_the_cwd(self):
+        """response_sweep's two-value state_paths, same invariant."""
+        for mod, state_name, pending_name in STATE_PAIRS:
+            with self.subTest(module=mod.__name__):
+                own = module_dir(mod)
+                with tempfile.TemporaryDirectory() as tmp, working_dir(tmp) as here:
+                    state_file, pending_file = mod.state_paths(dict(mod.DEFAULTS))
+                self.assertEqual(Path(state_file), own / "state" / state_name)
+                self.assertEqual(Path(pending_file), own / "state" / pending_name)
+                self.assertNotIn(here, Path(state_file).parents)
+                self.assertNotIn(here, Path(pending_file).parents)
+
+    def test_response_sweep_reads_sibling_ledgers_from_the_module_not_the_cwd(self):
+        """Its inputs are the other modules' ledgers, addressed relatively
+        (../thread_sweep/state/...). Anchored on the CWD those would resolve to
+        nothing, and the module would report zero answered threads rather than
+        failing loudly."""
+        own = module_dir(response_sweep)
+        with tempfile.TemporaryDirectory() as tmp, working_dir(tmp) as here:
+            ledgers = response_sweep.ledger_files(dict(response_sweep.DEFAULTS))
+        self.assertTrue(ledgers, "response_sweep ships no default ledger paths")
+        for path in ledgers:
+            self.assertTrue(Path(path).is_absolute())
+            self.assertNotIn(here, Path(path).parents)
+            self.assertIn(own.parent, Path(path).parents)
+
     def test_candidates_file_resolves_beside_the_module_not_the_cwd(self):
-        for mod, _state_name in STATEFUL:
+        for mod in CANDIDATES:
             with self.subTest(module=mod.__name__):
                 own = module_dir(mod)
                 with tempfile.TemporaryDirectory() as tmp, working_dir(tmp) as here:
@@ -176,7 +252,7 @@ class DistinctPathsTests(unittest.TestCase):
             mod.__name__: sweepcore.resolve_module_path(
                 mod.__file__, mod.DEFAULTS["candidates_file"]
             )
-            for mod, _state_name in STATEFUL
+            for mod in CANDIDATES
         }
         self.assertEqual(
             len(set(resolved.values())),
@@ -392,6 +468,56 @@ class ScanWritesBesideTheModuleTests(unittest.TestCase):
                 - timedelta(days=thread_sweep.DEFAULTS["default_window_days"])
             ).strftime("%Y-%m-%d")
             self.assertNotIn(f"window>{first_run_default}", out)
+
+
+class CoverageTests(unittest.TestCase):
+    """The guard on the guard. Every module directory in modules/ must appear in
+    the tables above; a module added without one silently drops out of every
+    test in this file, which is how the invariant came to cover six of eleven."""
+
+    def _module_dirs_on_disk(self):
+        return {
+            p.name
+            for p in MODULES_DIR.iterdir()
+            if p.is_dir() and (p / f"{p.name}.py").exists()
+        }
+
+    def test_every_module_directory_is_in_all_modules(self):
+        self.assertEqual(
+            self._module_dirs_on_disk(),
+            {mod.__name__ for mod in ALL_MODULES},
+            "modules/ and ALL_MODULES disagree — add the new module to the "
+            "tables in this file",
+        )
+
+    def test_every_module_with_state_paths_is_guarded(self):
+        listed = {mod.__name__ for mod, _ in STATEFUL}
+        listed |= {mod.__name__ for mod, _, _ in STATE_PAIRS}
+        has_state = {mod.__name__ for mod in ALL_MODULES if hasattr(mod, "state_paths")}
+        self.assertEqual(
+            has_state,
+            listed,
+            "a module exposes state_paths but is not in STATEFUL/STATE_PAIRS",
+        )
+
+    def test_every_module_has_a_config_default_case(self):
+        self.assertEqual(
+            {mod.__name__ for mod in ALL_MODULES},
+            {mod.__name__ for mod, _, _, _ in CONFIG_DEFAULTS},
+            "a module's --config default is unguarded",
+        )
+
+    def test_every_module_anchors_its_config_default_on_itself(self):
+        """Cheap static backstop for the same property CONFIG_DEFAULTS proves
+        dynamically: no module may install a bare relative --config default."""
+        for mod in ALL_MODULES:
+            with self.subTest(module=mod.__name__):
+                source = Path(mod.__file__).read_text(encoding="utf-8")
+                self.assertIn(
+                    "resolve_module_path(__file__,",
+                    source,
+                    f"{mod.__name__} never anchors a path on its own __file__",
+                )
 
 
 if __name__ == "__main__":
