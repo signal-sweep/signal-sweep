@@ -201,6 +201,92 @@ class DiscourseSnippetTests(unittest.TestCase):
         self.assertEqual(results[0]["snippet"], "How do I keep agent memory current?")
 
 
+class DiscoursePacingTests(unittest.TestCase):
+    """The primary lane's per-host floor. Anonymous Discourse search is
+    rate-limited per instance, and an unpaced sweep came back with 'HTTP 429'
+    from every configured instance at once, so a held window was the normal
+    outcome for the lane the module leads with."""
+
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def setUp(self):
+        fs._LAST_REQUEST_AT.clear()
+        self.addCleanup(fs._LAST_REQUEST_AT.clear)
+        # A fake clock the recorded sleeps advance. Real seconds are not spent,
+        # and a per-host wait stays distinguishable from a lane-wide one.
+        self.now = 1000.0
+        self.sleeps = []
+
+        def fake_sleep(seconds):
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+        for patcher in (
+            mock.patch.object(fs.time, "sleep", fake_sleep),
+            mock.patch.object(fs.time, "monotonic", lambda: self.now),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _serve(self, payload):
+        return lambda url, **kwargs: (200, json.dumps(payload), None)
+
+    def _run(self, instances, phrases=("agent memory",), payload=None):
+        cfg = {
+            "sources": {"discourse": {"instances": list(instances)}},
+            "query_groups": {"memory": list(phrases)},
+        }
+        with mock.patch.object(
+            fs, "http_get", self._serve(payload or {"topics": [], "posts": []})
+        ):
+            fs.discourse_adapter(cfg, self.SINCE, fs.LaneReport())
+
+    def test_repeat_requests_to_one_host_hold_the_lane_floor(self):
+        self._run(["forum.example.com"], phrases=("a", "b", "c"))
+        self.assertEqual(len(self.sleeps), 2)
+        for slept in self.sleeps:
+            self.assertEqual(slept, fs.DISCOURSE_MIN_REQUEST_DELAY)
+
+    def test_first_contact_with_a_host_is_not_paced(self):
+        self._run(["a.example.com", "b.example.com", "c.example.com"])
+        self.assertEqual(self.sleeps, [])
+
+    def test_the_wait_is_per_host_not_lane_wide(self):
+        # Two instances, two phrases each: only the second read of each host
+        # owes anything. A lane-wide floor would charge three of the four.
+        self._run(["a.example.com", "b.example.com"], phrases=("a", "b"))
+        self.assertEqual(len(self.sleeps), 2)
+
+    def test_elapsed_time_counts_toward_the_hosts_floor(self):
+        fs._pace_host("https://a.example.com", 1.0)
+        self.now += 0.75  # 0.75s of other work: fetching, parsing, another host
+        fs._pace_host("https://a.example.com", 1.0)
+        self.assertEqual(self.sleeps, [0.25])
+
+    def test_the_floor_wins_over_a_smaller_global_request_delay(self):
+        with mock.patch.object(fs, "REQUEST_DELAY", 0.2):
+            self._run(["forum.example.com"], phrases=("a", "b"))
+        self.assertEqual(self.sleeps, [fs.DISCOURSE_MIN_REQUEST_DELAY])
+
+    def test_a_larger_global_request_delay_still_wins(self):
+        # The floor raises the lane's pace; it never lowers an operator's.
+        with mock.patch.object(fs, "REQUEST_DELAY", 5.0):
+            self._run(["forum.example.com"], phrases=("a", "b"))
+        self.assertEqual(self.sleeps, [5.0])
+
+    def test_other_lanes_keep_the_module_wide_delay(self):
+        # The floor is discourse-local: raising it must not slow the rest, and
+        # every other caller keeps paying REQUEST_DELAY on every request.
+        cfg = {
+            "sources": {"hn": {"enabled": True}},
+            "query_groups": {"memory": ["agent memory"]},
+        }
+        with mock.patch.object(fs, "REQUEST_DELAY", 0.5):
+            with mock.patch.object(fs, "http_get", self._serve({"hits": []})):
+                fs.hn_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps, [0.5])
+
+
 class RedditTimeParamTests(unittest.TestCase):
     def test_smallest_covering_bucket(self):
         now = datetime(2026, 7, 1, tzinfo=timezone.utc)

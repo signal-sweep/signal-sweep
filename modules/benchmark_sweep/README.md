@@ -41,6 +41,8 @@ The scanner is recall; you are precision. For each candidate ask:
 - **Venue and recency**, same as thread-sweep. Is the repo/paper notable, and is this still live (unanswered issue, undiscussed paper) or already settled?
 - **For a `repro_tier: high` paper, could you actually run it?** The tier says a code link exists and a number is claimed. It cannot tell you the repo is more than a README, that the weights are downloadable, that the compute is within reach, or that the claim is interesting enough to be worth checking. Open the `code_link` and look before committing a week to it.
 
+[SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, read the tally, rank the repro shortlist, report. It carries no gate because the module has no outbound path, so its load-bearing rules are the ones that keep it that way. Port the same shape to any agent runtime.
+
 ## The demand tally
 
 `by_property_group` in `candidates.json`, and the `demand by property: …` line printed on every scan, is the first deliverable. It always lists all four properties, including any at zero, because a property nobody is arguing about *this run* is itself a finding, not a gap to hide. Read it over time, across multiple scans, to see which property accumulates real, sustained argument versus which one shows up once and goes quiet.
@@ -160,7 +162,7 @@ There is currently no published benchmark for any of these four properties, so t
 
 - A posted-response ledger, mirroring every outbound module's `posted_urls`/`append_ledger` from `sweepcore.py`, so the same thread is never offered the benchmark twice. Separate from `studied_papers.jsonl`, which tracks your own reproduction work and has no outbound meaning at all. Do not overload one file with both.
 - A `mark-posted`-equivalent subcommand recording what got offered, where.
-- A `SKILL.example.md`, wrapping the offer in the same hard per-comment human-approval gate thread-sweep and forum-sweep already use. No batch approval, no auto-post, ever.
+- An act-stage section in `SKILL.example.md`, wrapping the offer in the same hard per-comment human-approval gate thread-sweep and forum-sweep already use. No batch approval, no auto-post, ever.
 - Fit scoring that also checks *which* benchmark result would actually resolve the specific argument in that thread, not just that the property matches.
 
 Until then, this module stays exactly what it says on the tin. Discovery only.

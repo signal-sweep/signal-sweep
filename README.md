@@ -53,7 +53,7 @@ The module [README](modules/thread_sweep/README.md) covers the lanes, the fit ba
 
 ## The wider toolkit
 
-thread-sweep is one of eleven modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health and response-sweep are inward-facing and need neither). Reach for the others once you've felt the need.
+thread-sweep is one of eleven modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health and response-sweep are inward-facing and need neither). Every module also ships a `SKILL.example.md`, a working agent wrapper spelling out its gate, or for the inward-facing ones the rules that keep them inward-facing. Reach for the others once you've felt the need.
 
 | Module | What it does |
 |---|---|
@@ -102,7 +102,9 @@ See the [thread-sweep](#thread-sweep-the-one-to-start-with) commands above. Ever
 
 ## Contributing
 
-Issues and PRs welcome, module ideas especially. One rule is non-negotiable: nothing that weakens the human gate (auto-post paths, batch approval, schedulers) gets merged. Contributor conventions live in [CLAUDE.md](CLAUDE.md).
+Issues and PRs welcome, module ideas especially. One rule is non-negotiable: nothing that weakens the human gate (auto-post paths, batch approval, schedulers) gets merged. Setup, the test gate and what gets merged are in [CONTRIBUTING.md](CONTRIBUTING.md); the working conventions behind them are in [CLAUDE.md](CLAUDE.md).
+
+Found a security problem? Report it privately, never in an issue. [SECURITY.md](SECURITY.md) has the path and the threat surface worth checking.
 
 ## Built by
 

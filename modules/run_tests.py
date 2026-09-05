@@ -7,7 +7,7 @@ script runs as `cd modules/<name> && python <name>.py`). Its test imports the
 module by top-level name, which only resolves when that module's own directory is
 on sys.path[0]. A single top-level `discover` does NOT recurse into the
 non-package subdirectories, so it would silently run only the shared
-modules/test_sweepcore.py and skip all six per-module suites — green CI that
+modules/test_sweepcore.py and skip every per-module suite — green CI that
 gates almost nothing. Loading them in one process instead collides on the
 top-level module names (every suite does `import <module>`).
 

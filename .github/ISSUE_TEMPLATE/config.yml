@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/signal-sweep/signal-sweep/blob/main/SECURITY.md
+    about: Report privately, never in a public issue. SECURITY.md has the path.
+  - name: Contributing guide
+    url: https://github.com/signal-sweep/signal-sweep/blob/main/CONTRIBUTING.md
+    about: Setup, the test gate, and what gets merged.
