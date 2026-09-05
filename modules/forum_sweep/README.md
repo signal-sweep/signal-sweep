@@ -26,6 +26,8 @@ One adapter per source, all returning the same candidate schema (`url`, `title`,
 "discourse": { "instances": ["forum.cursor.com", "community.openai.com", "discuss.huggingface.co"] }
 ```
 
+Anonymous Discourse search is rate-limited per instance, and an unpaced sweep 429s across every instance at once, which holds the primary lane's window run after run. So the lane keeps a floor of 1 second **per host** whatever `request_delay_seconds` says. Per host rather than module-wide because the limit is per instance: the time spent reading `community.openai.com` is time `forum.cursor.com` has already waited, so a rotating sweep pays the floor once, not once per instance.
+
 **Hacker News.** The free Algolia API (`search_by_date`), one query per phrase over stories and comments, windowed by `created_at_i`. Hits below `thresholds.hn_min_points` are dropped. Maps to `news.ycombinator.com/item?id=`.
 
 ```json
@@ -186,7 +188,7 @@ Requires Python 3.10+. Stdlib only: `urllib.request` for the HTTP-JSON sources, 
 | `emit_cap` | recall ceiling on emitted candidates | `100` |
 | `seen_retention_days` | seen-store pruning horizon | `180` |
 | `default_window_days` | first-run window | `14` |
-| `request_delay_seconds` | polite sleep between HTTP requests (the 429 throttle; `0` disables) | `0.5` |
+| `request_delay_seconds` | polite sleep between HTTP requests (the 429 throttle; `0` disables). The discourse and reddit lanes hold their own higher floors on top of it | `0.5` |
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
 
 State lives in `state/forum_sweep_state.json` (a per-source last_run map + seen) and `state/forum_sweep_log.jsonl` (the posted ledger). Both are gitignored: the ledger is your posting history; never commit it.

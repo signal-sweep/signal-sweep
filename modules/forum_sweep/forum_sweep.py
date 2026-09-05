@@ -93,10 +93,28 @@ HTTP_TIMEOUT = 20
 
 # Polite inter-request throttle (seconds), set from config at scan start.
 # Discourse anonymous /search.json rate-limits bursts hard (HTTP 429); a small
-# delay keeps the primary lanes usable. 0 disables. The reddit lane paces
-# itself above this floor (REDDIT_MIN_REQUEST_DELAY) because it 429s far
-# sooner, and only that lane pays the cost.
+# delay keeps the primary lanes usable. 0 disables. Two lanes pace themselves
+# above this floor because they 429 sooner than the rest, and only those lanes
+# pay the cost: reddit (REDDIT_MIN_REQUEST_DELAY) and discourse
+# (DISCOURSE_MIN_REQUEST_DELAY).
 REQUEST_DELAY = 0.0
+
+# Pacing floor for the discourse lane, held PER HOST. Anonymous /search.json
+# is rate-limited per instance, and an unpaced sweep 429s across every
+# configured instance at once (observed 2026-09-05 on forum.cursor.com,
+# community.openai.com and discuss.huggingface.co), which holds the window for
+# the module's primary lane run after run -- the held stamp becomes the normal
+# outcome rather than the exception.
+#
+# Per host, not module-wide, because the limit is per instance. The lane
+# iterates instance x phrase, so the time spent reading one instance is time
+# the next one has already waited; charging every request the full floor would
+# slow the sweep by the number of instances for no extra politeness.
+DISCOURSE_MIN_REQUEST_DELAY = 1.0
+
+# host -> time.monotonic() of the last request this process sent it. Only the
+# per-host lanes touch it; a module-wide throttle needs no memory.
+_LAST_REQUEST_AT = {}
 
 
 def load_config(path):
@@ -214,12 +232,44 @@ def make_candidate(
 # --- HTTP helper -------------------------------------------------------------
 
 
-def http_get_json(url, errors, label):
+def _pace_host(host, floor):
+    """Sleep only as long as this host is still owed.
+
+    A module-wide throttle charges every request the full delay. That is right
+    for a global politeness setting and wrong for a per-instance rate limit,
+    because time spent on OTHER hosts in between is real time this host's limit
+    already counted. So the wait is the floor minus whatever has elapsed since
+    this host was last read, and first contact waits not at all: there is no
+    earlier request to space it from.
+    """
+    if floor <= 0:
+        return
+    previous = _LAST_REQUEST_AT.get(host)
+    if previous is not None:
+        wait = floor - (time.monotonic() - previous)
+        if wait > 0:
+            time.sleep(wait)
+    _LAST_REQUEST_AT[host] = time.monotonic()
+
+
+def http_get_json(url, errors, label, host=None, delay=None):
     """GET a URL and parse JSON. Fail-soft: any error appends to errors[] and
     returns None so the caller continues to the next instance/source. Delegates
-    the fetch to sweepcore.http_get, which adds 429/503 Retry-After backoff."""
-    if REQUEST_DELAY > 0:
-        time.sleep(REQUEST_DELAY)
+    the fetch to sweepcore.http_get, which adds 429/503 Retry-After backoff.
+
+    `delay` raises the throttle for this one call, so a lane with a tighter
+    rate limit than the rest of the module can pace itself without the operator
+    slowing every other lane to match (the same contract http_get_xml offers
+    the reddit lane). `host` makes that wait per host rather than module-wide,
+    for a limit enforced per instance. Only the discourse lane passes either
+    today; every other caller keeps the module-wide REQUEST_DELAY exactly as
+    before.
+    """
+    floor = REQUEST_DELAY if delay is None else max(REQUEST_DELAY, delay)
+    if host is not None:
+        _pace_host(host, floor)
+    elif floor > 0:
+        time.sleep(floor)
     status, body, err = http_get(
         url,
         timeout=HTTP_TIMEOUT,
@@ -321,7 +371,11 @@ def _lane_query_groups(cfg, lane):
 def discourse_adapter(cfg, since_dt, errors):
     """PRIMARY lane. For each configured Discourse instance, for each query
     phrase, GET <instance>/search.json?q=<term> and parse the topics array.
-    Degrades gracefully on Cloudflare/login/non-200 (errors[], continue)."""
+    Degrades gracefully on Cloudflare/login/non-200 (errors[], continue).
+
+    Paced per host at DISCOURSE_MIN_REQUEST_DELAY: anonymous search is
+    rate-limited per instance, and an unpaced burst 429s the lane into a held
+    window."""
     results = []
     src = cfg["sources"].get("discourse") or {}
     instances = src.get("instances") or []
@@ -336,7 +390,13 @@ def discourse_adapter(cfg, since_dt, errors):
             for phrase in phrases:
                 q = urllib.parse.quote(phrase)
                 url = f"{host}/search.json?q={q}"
-                data = http_get_json(url, errors, f"discourse {instance} {pattern}")
+                data = http_get_json(
+                    url,
+                    errors,
+                    f"discourse {instance} {pattern}",
+                    host=host,
+                    delay=DISCOURSE_MIN_REQUEST_DELAY,
+                )
                 if not data:
                     continue
                 topics = data.get("topics")
