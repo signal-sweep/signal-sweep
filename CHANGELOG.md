@@ -4,6 +4,11 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
+## Fixes — 2026-09-05
+
+- **cfp-sweep's scan-integration suite compared fixture deadlines against the live clock, not the frozen test date.** `cmd_scan` read `datetime.now(timezone.utc)` directly, so `ScanIntegrationTests`' fixture CFP deadlines — written relative to the module's `TODAY` test constant — quietly expired as real time passed them, most recently failing required checks on `test_candidate_shape_and_topic_match_count_leads_the_sort` (findings c74fa9dd, a6ad7b8e). The clock read is now one `_now()` call the tests can freeze, and every scan-integration fixture deadline is a `timedelta` offset from `TODAY` rather than a literal date, so the suite can't rot on the calendar again.
+- **`lint.yml` had no top-level `permissions:` block.** Added `contents: read` at the workflow level, matching `redaction-check-action`'s CI (finding 170d4b53).
+
 ## v0.6.0 — benchmark-sweep grows a repro lens — 2026-08-30
 
 benchmark-sweep already fetched the right papers. It just had nothing to say about which of them you could actually go and check.

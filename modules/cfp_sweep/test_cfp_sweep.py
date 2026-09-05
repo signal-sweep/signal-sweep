@@ -51,7 +51,10 @@ def _full_config(**overrides):
 def _entry(name="Test Conf", **overrides):
     """A conference-data record shaped like the real dataset (verified live
     2026-08-26): name, url, startDate, endDate, city, country, online,
-    cfpUrl, cfpEndDate. No cfpStartDate - the live schema does not carry one."""
+    cfpUrl, cfpEndDate. No cfpStartDate - the live schema does not carry one.
+    cfpEndDate defaults to an offset from TODAY, not a literal date, so a
+    scan-integration test using the default never rots on the calendar the
+    way the hardcoded '2026-08-30' fixtures did (findings c74fa9dd/a6ad7b8e)."""
     base = {
         "name": name,
         "url": "https://example.com/conf",
@@ -61,7 +64,7 @@ def _entry(name="Test Conf", **overrides):
         "country": "USA",
         "online": False,
         "cfpUrl": "https://example.com/conf/cfp",
-        "cfpEndDate": "2026-09-15",
+        "cfpEndDate": (TODAY + timedelta(days=20)).isoformat(),
     }
     base.update(overrides)
     return base
@@ -856,6 +859,14 @@ class EarnedWindowTests(unittest.TestCase):
 
 
 class ScanIntegrationTests(unittest.TestCase):
+    # TODAY as the tz-aware datetime cs._now() would return - cmd_scan derives
+    # today, the earned-window marker, and the seen-store cutoff all from one
+    # _now() call, so freezing it here pins every date cmd_scan computes to
+    # the module-level TODAY constant instead of the real clock (findings
+    # c74fa9dd/a6ad7b8e: this suite used to compare fixture deadlines against
+    # whatever day it happened to run on).
+    FROZEN_NOW = datetime(TODAY.year, TODAY.month, TODAY.day, tzinfo=timezone.utc)
+
     def _run_scan(self, cfg, url_map, tmp):
         cfg["state_dir"] = str(Path(tmp) / "state")
         cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
@@ -863,6 +874,7 @@ class ScanIntegrationTests(unittest.TestCase):
         with (
             mock.patch.object(cs, "load_config", return_value=cfg),
             mock.patch.object(cs, "http_get", _http_map(url_map)),
+            mock.patch.object(cs, "_now", return_value=self.FROZEN_NOW),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             cs.cmd_scan(args)
@@ -872,12 +884,12 @@ class ScanIntegrationTests(unittest.TestCase):
         near = _entry(
             name="Near Deadline Conf",
             cfpUrl="https://near.example/cfp",
-            cfpEndDate="2026-08-30",
+            cfpEndDate=(TODAY + timedelta(days=4)).isoformat(),
         )
         far_multi = _entry(
             name="Multi Topic Conf",
             cfpUrl="https://multi.example/cfp",
-            cfpEndDate="2026-12-01",
+            cfpEndDate=(TODAY + timedelta(days=90)).isoformat(),
         )
         url_map = {
             _topic_url("python", 2026): (200, json.dumps([near, far_multi]), None),
@@ -911,12 +923,14 @@ class ScanIntegrationTests(unittest.TestCase):
 
     def test_deadline_proximity_breaks_ties_within_equal_topic_match_count(self):
         soon = _entry(
-            name="Soon Conf", cfpUrl="https://soon.example/cfp", cfpEndDate="2026-08-30"
+            name="Soon Conf",
+            cfpUrl="https://soon.example/cfp",
+            cfpEndDate=(TODAY + timedelta(days=4)).isoformat(),
         )
         later = _entry(
             name="Later Conf",
             cfpUrl="https://later.example/cfp",
-            cfpEndDate="2026-12-01",
+            cfpEndDate=(TODAY + timedelta(days=90)).isoformat(),
         )
         url_map = {_topic_url("python", 2026): (200, json.dumps([soon, later]), None)}
         cfg = _full_config(topics=["python"], watchlist=[])
