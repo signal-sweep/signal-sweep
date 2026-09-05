@@ -30,6 +30,8 @@ python placement_health.py check --log        # also append to state/health_log.
 
 No dependencies beyond the Python standard library, and no GitHub CLI needed (it reads arbitrary public URLs).
 
+[SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: check, separate DROPPED from BROKEN, and hand back a triage list. It carries no gate because nothing goes out, so its load-bearing rules are the ones that stop an agent re-submitting on your behalf. Port the same shape to any agent runtime.
+
 ## Registry reference
 
 | Field | Meaning |

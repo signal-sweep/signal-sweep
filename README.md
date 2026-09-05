@@ -53,7 +53,7 @@ The module [README](modules/thread_sweep/README.md) covers the lanes, the fit ba
 
 ## The wider toolkit
 
-thread-sweep is one of eleven modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health and response-sweep are inward-facing and need neither). Reach for the others once you've felt the need.
+thread-sweep is one of eleven modules on a shared pipeline (`signal → judge → gate → act → ledger`). Every outbound module shares the same gate shape and records to the same `modules/sweepcore.py` ledger format, so posting semantics stay identical by construction (placement-health and response-sweep are inward-facing and need neither). Every module also ships a `SKILL.example.md`, a working agent wrapper spelling out its gate, or for the inward-facing ones the rules that keep them inward-facing. Reach for the others once you've felt the need.
 
 | Module | What it does |
 |---|---|

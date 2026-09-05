@@ -75,6 +75,8 @@ python teardown_sweep.py log                     # show recorded teardowns, incl
 
 `--dry-run` makes no network or `gh` calls and writes nothing; it prints the exact queries it would run. `--no-artefacts` skips lane 3 (the rate-limited code-search lane) for a quick lanes-1/2-only run; lanes 1-2 make no `gh` calls that are rate-limited the same way, so this is the fast path when you only want frameworks and write-ups.
 
+[SKILL.example.md](SKILL.example.md) is a working Claude Code skill that wraps this module: scan, read the lanes separately, brief a shortlist, and record a teardown once it is actually published. It carries no posting gate because nothing goes out, and its load-bearing rules are the etiquette above plus the untrusted-artefact rule. Port the same shape to any agent runtime.
+
 ## Config reference
 
 | Key | Meaning | Default |
