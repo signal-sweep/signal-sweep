@@ -3,5 +3,5 @@
 # 102 findings on with no code change -- ruff.toml's explicit select now
 # absorbs that class). Dependabot watches this file so bumps arrive as PRs
 # instead of depending on someone remembering.
-ruff==0.16.4
+ruff==0.16.5
 coverage==7.15.4
