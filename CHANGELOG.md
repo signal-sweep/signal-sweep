@@ -68,8 +68,6 @@ A scan where every request failed used to advance the last-run stamp anyway, sil
 
 ## v0.3.0 — the toolkit fills out + a shared core — 2026-07-01
 
-## v0.3.0 — the toolkit fills out + a shared core
-
 Three new modules, a shared core every module now sits on, and sharper ranking. Everything keeps the same non-negotiable: nothing posts without your explicit per-comment approval.
 
 ### New modules

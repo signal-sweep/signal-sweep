@@ -25,6 +25,12 @@ _spec.loader.exec_module(cs)
 # against live (2026-08-26). Fixture dates below are chosen relative to it.
 TODAY = date(2026, 8, 26)
 
+# The tz-aware datetime cs._now() returns. cmd_scan derives today, the
+# earned-window marker and the seen-store cutoff from one _now() call, so any
+# test that reaches cmd_scan patches this in and every date it computes is
+# pinned to TODAY rather than the real clock.
+FROZEN_NOW = datetime(TODAY.year, TODAY.month, TODAY.day, tzinfo=timezone.utc)
+
 CONFIG = {
     "subject": {"name": "test-project", "url": "https://github.com/me/test-project"},
     "topics": ["python", "data"],
@@ -245,7 +251,9 @@ class ConferenceDataLaneTests(unittest.TestCase):
         return result, report, dropped
 
     def test_keeps_a_well_formed_open_entry(self):
-        url_map = {_topic_url("python", 2026): (200, json.dumps([_entry()]), None)}
+        url_map = {
+            _topic_url("python", TODAY.year): (200, json.dumps([_entry()]), None)
+        }
         result, _report, dropped = self._run(["python"], url_map)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["venue"], "Test Conf")
@@ -260,7 +268,7 @@ class ConferenceDataLaneTests(unittest.TestCase):
             _entry(name="Bad Cfp End", cfpEndDate="also-not-a-date"),
             _entry(name="Good Conf"),
         ]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, report, dropped = self._run(["python"], url_map)
         self.assertEqual([c["venue"] for c in result], ["Good Conf"])
         self.assertEqual(dropped["malformed"], 4)
@@ -271,7 +279,7 @@ class ConferenceDataLaneTests(unittest.TestCase):
             _entry(name="No Cfp Tracked", cfpEndDate=None),
             _entry(name="Has Cfp"),
         ]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(["python"], url_map)
         self.assertEqual([c["venue"] for c in result], ["Has Cfp"])
         self.assertEqual(dropped["no_cfp"], 1)
@@ -279,7 +287,7 @@ class ConferenceDataLaneTests(unittest.TestCase):
 
     def test_closed_cfp_is_dropped(self):
         raw_list = [_entry(name="Already Closed", cfpEndDate="2026-01-01")]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(["python"], url_map)
         self.assertEqual(result, [])
         self.assertEqual(dropped["cfp_closed"], 1)
@@ -290,21 +298,21 @@ class ConferenceDataLaneTests(unittest.TestCase):
                 name="Already Happened", startDate="2026-01-01", endDate="2026-01-02"
             )
         ]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(["python"], url_map)
         self.assertEqual(result, [])
         self.assertEqual(dropped["past_event"], 1)
 
     def test_region_filter_excludes_unlisted_country(self):
         raw_list = [_entry(name="India Conf", country="India"), _entry(name="USA Conf")]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(["python"], url_map, countries=["USA"])
         self.assertEqual([c["venue"] for c in result], ["USA Conf"])
         self.assertEqual(dropped["region"], 1)
 
     def test_online_entry_included_regardless_of_country_when_include_online(self):
         raw_list = [_entry(name="Online Conf", online=True, country=None, city=None)]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(
             ["python"], url_map, countries=["USA"], include_online=True
         )
@@ -313,7 +321,7 @@ class ConferenceDataLaneTests(unittest.TestCase):
 
     def test_online_entry_excluded_when_include_online_false_and_no_country_match(self):
         raw_list = [_entry(name="Online Conf", online=True, country=None, city=None)]
-        url_map = {_topic_url("python", 2026): (200, json.dumps(raw_list), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps(raw_list), None)}
         result, _report, dropped = self._run(
             ["python"], url_map, countries=["USA"], include_online=False
         )
@@ -323,8 +331,8 @@ class ConferenceDataLaneTests(unittest.TestCase):
     def test_same_conference_across_two_topics_merges_with_accumulated_topics(self):
         shared = _entry(name="Shared Conf", cfpUrl="https://shared.example/cfp")
         url_map = {
-            _topic_url("python", 2026): (200, json.dumps([shared]), None),
-            _topic_url("data", 2026): (200, json.dumps([shared]), None),
+            _topic_url("python", TODAY.year): (200, json.dumps([shared]), None),
+            _topic_url("data", TODAY.year): (200, json.dumps([shared]), None),
         }
         result, _report, _dropped = self._run(["python", "data"], url_map)
         self.assertEqual(len(result), 1)
@@ -333,7 +341,7 @@ class ConferenceDataLaneTests(unittest.TestCase):
     def test_404_topic_year_counts_as_covered_not_an_error(self):
         # python/2026 has data; python/2027 is not seeded yet - both count as
         # a covered fetch (verified live: 2027 has 6 of 2026's 30 topic files).
-        url_map = {_topic_url("python", 2026): (200, "[]", None)}
+        url_map = {_topic_url("python", TODAY.year): (200, "[]", None)}
         _result, report, _dropped = self._run(["python"], url_map)
         self.assertEqual(report.fetches_ok, 2)
         self.assertEqual(list(report), [])
@@ -341,21 +349,23 @@ class ConferenceDataLaneTests(unittest.TestCase):
 
     def test_network_error_is_recorded_and_breaks_clean(self):
         url_map = {
-            _topic_url("python", 2026): (None, "", "connection refused"),
-            _topic_url("python", 2027): (404, "", "HTTP 404"),
+            _topic_url("python", TODAY.year): (None, "", "connection refused"),
+            _topic_url("python", TODAY.year + 1): (404, "", "HTTP 404"),
         }
         _result, report, _dropped = self._run(["python"], url_map)
         self.assertFalse(report.clean)
         self.assertEqual(len(report), 1)
 
     def test_non_list_payload_is_a_recorded_error(self):
-        url_map = {_topic_url("python", 2026): (200, json.dumps({"oops": True}), None)}
+        url_map = {
+            _topic_url("python", TODAY.year): (200, json.dumps({"oops": True}), None)
+        }
         result, report, _dropped = self._run(["python"], url_map)
         self.assertEqual(result, [])
         self.assertFalse(report.clean)
 
     def test_bad_json_payload_is_a_recorded_error(self):
-        url_map = {_topic_url("python", 2026): (200, "{not json", None)}
+        url_map = {_topic_url("python", TODAY.year): (200, "{not json", None)}
         result, report, _dropped = self._run(["python"], url_map)
         self.assertEqual(result, [])
         self.assertFalse(report.clean)
@@ -705,6 +715,7 @@ class DryRunTests(unittest.TestCase):
                 mock.patch.object(
                     cs, "http_get", side_effect=AssertionError("no network in dry-run")
                 ),
+                mock.patch.object(cs, "_now", return_value=FROZEN_NOW),
                 mock.patch("sys.stdout", buf),
             ):
                 rc = cs.cmd_scan(args)
@@ -722,6 +733,7 @@ class DryRunTests(unittest.TestCase):
         buf = io.StringIO()
         with (
             mock.patch.object(cs, "load_config_for_dry_run", return_value=cfg),
+            mock.patch.object(cs, "_now", return_value=FROZEN_NOW),
             mock.patch("sys.stdout", buf),
         ):
             cs.cmd_scan(args)
@@ -761,6 +773,7 @@ class EarnedWindowTests(unittest.TestCase):
         with (
             mock.patch.object(cs, "load_config", return_value=cfg),
             mock.patch.object(cs, "http_get", side_effect=http_get_fn),
+            mock.patch.object(cs, "_now", return_value=FROZEN_NOW),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(err),
         ):
@@ -829,10 +842,11 @@ class EarnedWindowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg, state_file = self._setup(tmp, {"seen": {}})
             self._scan(cfg, self._ok)
-            age = datetime.now(timezone.utc) - datetime.fromisoformat(
-                self._marker(state_file)
+            # Stamped from the run's own clock, so this is exact rather than a
+            # tolerance window against whatever the wall clock reads.
+            self.assertEqual(
+                datetime.fromisoformat(self._marker(state_file)), FROZEN_NOW
             )
-            self.assertAlmostEqual(age.total_seconds(), 0, delta=120)
 
     def test_unreadable_marker_warns_and_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -859,13 +873,9 @@ class EarnedWindowTests(unittest.TestCase):
 
 
 class ScanIntegrationTests(unittest.TestCase):
-    # TODAY as the tz-aware datetime cs._now() would return - cmd_scan derives
-    # today, the earned-window marker, and the seen-store cutoff all from one
-    # _now() call, so freezing it here pins every date cmd_scan computes to
-    # the module-level TODAY constant instead of the real clock (findings
-    # c74fa9dd/a6ad7b8e: this suite used to compare fixture deadlines against
-    # whatever day it happened to run on).
-    FROZEN_NOW = datetime(TODAY.year, TODAY.month, TODAY.day, tzinfo=timezone.utc)
+    # Findings c74fa9dd/a6ad7b8e: this suite used to compare fixture deadlines
+    # against whatever day it happened to run on. The module-level FROZEN_NOW
+    # is what stops that.
 
     def _run_scan(self, cfg, url_map, tmp):
         cfg["state_dir"] = str(Path(tmp) / "state")
@@ -874,7 +884,7 @@ class ScanIntegrationTests(unittest.TestCase):
         with (
             mock.patch.object(cs, "load_config", return_value=cfg),
             mock.patch.object(cs, "http_get", _http_map(url_map)),
-            mock.patch.object(cs, "_now", return_value=self.FROZEN_NOW),
+            mock.patch.object(cs, "_now", return_value=FROZEN_NOW),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             cs.cmd_scan(args)
@@ -892,8 +902,12 @@ class ScanIntegrationTests(unittest.TestCase):
             cfpEndDate=(TODAY + timedelta(days=90)).isoformat(),
         )
         url_map = {
-            _topic_url("python", 2026): (200, json.dumps([near, far_multi]), None),
-            _topic_url("data", 2026): (200, json.dumps([far_multi]), None),
+            _topic_url("python", TODAY.year): (
+                200,
+                json.dumps([near, far_multi]),
+                None,
+            ),
+            _topic_url("data", TODAY.year): (200, json.dumps([far_multi]), None),
         }
         cfg = _full_config(topics=["python", "data"], watchlist=[])
         with tempfile.TemporaryDirectory() as tmp:
@@ -932,7 +946,9 @@ class ScanIntegrationTests(unittest.TestCase):
             cfpUrl="https://later.example/cfp",
             cfpEndDate=(TODAY + timedelta(days=90)).isoformat(),
         )
-        url_map = {_topic_url("python", 2026): (200, json.dumps([soon, later]), None)}
+        url_map = {
+            _topic_url("python", TODAY.year): (200, json.dumps([soon, later]), None)
+        }
         cfg = _full_config(topics=["python"], watchlist=[])
         with tempfile.TemporaryDirectory() as tmp:
             payload = self._run_scan(cfg, url_map, tmp)
@@ -942,7 +958,9 @@ class ScanIntegrationTests(unittest.TestCase):
 
     def test_conference_data_lane_ranks_above_watchlist_lane(self):
         dataset_hit = _entry(name="Dataset Conf", cfpUrl="https://dataset.example/cfp")
-        url_map = {_topic_url("python", 2026): (200, json.dumps([dataset_hit]), None)}
+        url_map = {
+            _topic_url("python", TODAY.year): (200, json.dumps([dataset_hit]), None)
+        }
         cfg = _full_config(
             topics=["python"],
             watchlist=[
@@ -955,7 +973,7 @@ class ScanIntegrationTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             # The watchlist venue's own page: no phrase, no dated deadline.
-            url_map[_topic_url("python", 2027)] = (404, "", "HTTP 404")
+            url_map[_topic_url("python", TODAY.year + 1)] = (404, "", "HTTP 404")
             url_map["https://watchlist.example/cfp"] = (200, "no signal here", None)
             payload = self._run_scan(cfg, url_map, tmp)
         self.assertEqual(
@@ -967,7 +985,7 @@ class ScanIntegrationTests(unittest.TestCase):
 
     def test_cooldown_drop_reason_appears_in_the_digest(self):
         conf = _entry(name="Burned Venue", cfpUrl="https://burned.example/cfp")
-        url_map = {_topic_url("python", 2026): (200, json.dumps([conf]), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps([conf]), None)}
         cfg = _full_config(topics=["python"], watchlist=[], default_cooldown_days=180)
         with tempfile.TemporaryDirectory() as tmp:
             cfg["state_dir"] = str(Path(tmp) / "state")
@@ -990,7 +1008,7 @@ class ScanIntegrationTests(unittest.TestCase):
 
     def test_seen_candidate_does_not_resurface_on_a_second_scan(self):
         conf = _entry(name="Repeat Conf", cfpUrl="https://repeat.example/cfp")
-        url_map = {_topic_url("python", 2026): (200, json.dumps([conf]), None)}
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps([conf]), None)}
         cfg = _full_config(topics=["python"], watchlist=[])
         with tempfile.TemporaryDirectory() as tmp:
             first = self._run_scan(cfg, url_map, tmp)
