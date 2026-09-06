@@ -4,4 +4,4 @@
 # absorbs that class). Dependabot watches this file so bumps arrive as PRs
 # instead of depending on someone remembering.
 ruff==0.16.5
-coverage==7.15.4
+coverage==7.16.0
