@@ -930,6 +930,119 @@ class PerSourceLastRunTests(ScanHarness, unittest.TestCase):
             ]
             self.assertEqual(marks, self.OLD)
 
+    def _attempts(self, state_file):
+        return json.loads(state_file.read_text(encoding="utf-8"))[
+            "last_attempt_by_source"
+        ]
+
+    def test_every_selected_lane_stamps_an_attempt_however_its_fetch_went(self):
+        """The bookkeeping a health check reads. last_run answers "how far back
+        is this lane still uncovered" and deliberately holds on a bad fetch, so
+        it cannot also answer "did this lane run". reddit and discourse froze on
+        2026-08-07 and kept producing candidates for five more weeks with
+        nothing saying so; the attempt stamp is what makes held and dead
+        distinguishable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, state_file = self._setup(
+                tmp, {"last_run_by_source": dict(self.OLD), "seen": {}}
+            )
+            self._scan(
+                cfg_path,
+                "all",
+                {
+                    # Clean and productive.
+                    "hn": self._adapter(hits=1),
+                    # Clean but empty: a covered window with nothing in it.
+                    "lobsters": self._adapter(hits=0),
+                    # The reddit shape: requests came back and produced
+                    # candidates, one of them failed (HTTP 429 on a single sub),
+                    # so the lane is held.
+                    "reddit": self._adapter(
+                        hits=1, error="reddit r/LocalLLaMA: HTTP 429", fetched=True
+                    ),
+                    # Nothing ever came back.
+                    "discourse": self._adapter(
+                        hits=0, error="discourse: HTTP 503", fetched=False
+                    ),
+                },
+            )
+            attempts = self._attempts(state_file)
+            for name in fs.SOURCES:
+                self.assertIn(name, attempts, f"{name} recorded no attempt")
+                self.assertIsNotNone(fs.parse_stamp(attempts[name]))
+            marks = self._marks(state_file)
+            # The held lanes still hold their window — that invariant is the
+            # reason the attempt stamp had to be a second field, not this one.
+            for held in ("reddit", "discourse"):
+                self.assertEqual(marks[held], self.OLD[held])
+            for advanced in ("hn", "lobsters"):
+                self.assertNotEqual(marks[advanced], self.OLD[advanced])
+
+    def test_attempt_stamp_advances_on_a_held_lane_across_runs(self):
+        """The frozen-marker symptom: a lane that fails one request every run
+        holds its last_run forever. Its attempt stamp must keep moving, or the
+        second run looks identical to a lane nobody scanned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, state_file = self._setup(
+                tmp, {"last_run_by_source": dict(self.OLD), "seen": {}}
+            )
+            held = {"reddit": self._adapter(hits=0, error="reddit: HTTP 429")}
+            self._scan(cfg_path, "reddit", held)
+            first = self._attempts(state_file)["reddit"]
+            self._scan(cfg_path, "reddit", held)
+            second = self._attempts(state_file)["reddit"]
+            self.assertGreater(fs.parse_stamp(second), fs.parse_stamp(first))
+            self.assertEqual(self._marks(state_file)["reddit"], self.OLD["reddit"])
+
+    def test_dry_run_records_no_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, state_file = self._setup(
+                tmp, {"last_run_by_source": dict(self.OLD), "seen": {}}
+            )
+            args = argparse.Namespace(
+                config=str(cfg_path),
+                source="hn",
+                days=None,
+                limit=None,
+                dry_run=True,
+            )
+            with mock.patch.dict(fs.ADAPTERS, {"hn": self._adapter(hits=1)}):
+                fs.cmd_scan(args)
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(state.get("last_attempt_by_source", {}), {})
+
+    def test_long_held_lane_warns_with_its_age(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, state_file = self._setup(
+                tmp, {"last_run_by_source": {"reddit": old}, "seen": {}}
+            )
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self._scan(
+                    cfg_path,
+                    "reddit",
+                    {"reddit": self._adapter(hits=1, error="reddit: HTTP 429")},
+                )
+            warning = err.getvalue()
+            self.assertIn("last_run held for", warning)
+            self.assertIn("reddit (40d)", warning)
+
+    def test_short_held_lane_does_not_warn_about_age(self):
+        recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, state_file = self._setup(
+                tmp, {"last_run_by_source": {"reddit": recent}, "seen": {}}
+            )
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self._scan(
+                    cfg_path,
+                    "reddit",
+                    {"reddit": self._adapter(hits=1, error="reddit: HTTP 429")},
+                )
+            self.assertNotIn("last_run held for", err.getvalue())
+
     def test_dry_run_does_not_advance_any_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_path, state_file = self._setup(

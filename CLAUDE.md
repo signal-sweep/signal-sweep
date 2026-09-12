@@ -13,6 +13,6 @@ Human-gated presence tooling. Two maintainers (@jimy-r, @jtzingsheim1), best-eff
 
 ## Layout
 
-- `modules/<name>/`: one self-contained module per directory (script, `config.example.json`, module README, optional agent-skill example).
+- `modules/<name>/`: one self-contained module per directory (script, an `*.example.json` config template, module README, optional agent-skill example). Most modules name that template `config.example.json`; a module whose config is a list of things names it for the list instead (`placements.example.json`, `channels.example.json`).
 - `modules/sweepcore.py`: the shared core the modules import — dedup, ledger, state, `gh`, HTTP with backoff, relevance tiering. Reuse it rather than copying its logic into a new module.
 - A helper that is not yet in sweepcore stays inside its module until a second module genuinely needs it; move it into the core on the second use, not the first.

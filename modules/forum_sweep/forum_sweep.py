@@ -56,6 +56,7 @@ from sweepcore import (  # noqa: E402
     http_get,
     load_state,
     note_fetch_ok,
+    parse_stamp,
     posted_urls,
     relevance_tier,
     resolve_module_path,
@@ -88,6 +89,11 @@ SOURCES = (
 
 # Descriptive UA so venue operators can identify (and rate-limit / contact) the
 # tool rather than seeing an anonymous scraper. Honesty is the etiquette here.
+# How long a lane's last_run may sit held before the run says so out loud. Two
+# weeks is the default window: past that, the held lane is re-scanning ground it
+# has already re-scanned every run since.
+HELD_WARN_DAYS = 14
+
 USER_AGENT = "signal-sweep forum-sweep (https://github.com/signal-sweep/signal-sweep)"
 HTTP_TIMEOUT = 20
 
@@ -182,6 +188,8 @@ def migrate_state(state):
         for name in SOURCES:
             by_source.setdefault(name, legacy)
     state["last_run_by_source"] = by_source
+    attempts = state.get("last_attempt_by_source")
+    state["last_attempt_by_source"] = attempts if isinstance(attempts, dict) else {}
     return state
 
 
@@ -1309,6 +1317,27 @@ def cmd_scan(args):
             "windows are re-scanned next time",
             file=sys.stderr,
         )
+    # A lane held for one run is the mechanism working. A lane held for weeks is
+    # a lane that has stopped earning markers at all, and nothing said so: its
+    # last_run sits frozen, which reads exactly like a dead adapter even while
+    # the lane is fetching and producing candidates. (Worked case: reddit and
+    # discourse froze on 2026-08-07 and kept working for five more weeks; one
+    # sub answering HTTP 429 out of fifteen requests is enough to hold the whole
+    # lane, because clean means every request came back.) Name the age here, and
+    # stamp the attempt below, so held and dead stop looking alike.
+    stale_held = []
+    for name in held:
+        marker = parse_stamp(state.get("last_run_by_source", {}).get(name))
+        if marker is not None and (now - marker).days >= HELD_WARN_DAYS:
+            stale_held.append(f"{name} ({(now - marker).days}d)")
+    if stale_held:
+        print(
+            f"WARN last_run held for {HELD_WARN_DAYS}+ days: {', '.join(stale_held)} "
+            "— the lane may be fetching fine and failing one request every run; "
+            "check last_attempt_by_source and the errors list before reading the "
+            "frozen marker as a dead adapter",
+            file=sys.stderr,
+        )
 
     if not args.dry_run:
         today = now.date().isoformat()
@@ -1318,7 +1347,16 @@ def cmd_scan(args):
             seen[cand["url"]] = today
         cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
         state["seen"] = {u: d for u, d in seen.items() if d >= cutoff}
+        stamp = now.isoformat()
         for name in selected:
+            # Every selected lane stamps its attempt, clean or held, zero
+            # candidates or a partial failure. This is the bookkeeping a health
+            # check wants: last_run answers "how far back is this lane's window
+            # still uncovered", which deliberately does not move on a held run,
+            # and answering the different question ("did this lane run at all")
+            # from it is what made a working reddit lane look dead for five
+            # weeks. Two questions, two fields.
+            state["last_attempt_by_source"][name] = stamp
             if clean[name]:
                 state["last_run_by_source"][name] = _earned_stamp(
                     name, state, since_by_source, now

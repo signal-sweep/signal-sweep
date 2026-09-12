@@ -94,6 +94,23 @@ These are why it stays useful instead of becoming the next muted bot.
 4. **A ledger, so nothing doubles up.** Every posted reply is recorded. The scanner excludes answered threads forever, and posting density is reported on every run so restraint stays visible.
 5. **Scarcity is the spam defence.** A few genuinely useful replies a month build standing. More spends it.
 
+## Install
+
+There is no `pip install signal-sweep`, and that is deliberate. You clone the repo and work inside it.
+
+```bash
+git clone https://github.com/signal-sweep/signal-sweep
+cd signal-sweep
+gh auth status                 # the modules shell out to gh
+python modules/run_tests.py    # the test gate; every suite, all offline
+```
+
+Each module is a directory that holds its own script, its config template, its live config, and its state. `modules/thread_sweep/config.json` sits next to `thread_sweep.py`, and `state/` and `candidates.json` sit next to both. Installing the code into `site-packages` would put the program in one place and the configs and ledgers you actually edit in another, and the ledgers are the part that matters: they are your posting history, and losing track of where they live is how a thread gets answered twice.
+
+So the tree is the working directory, not a build artifact. `.gitignore` already protects the live files (`config_*.json`, `candidates_*.json`, `state_*/`), so `git pull` brings new modules without touching your configs.
+
+Packaging was considered and declined on that ground. If you want the modules on your `PATH`, alias them; the scripts resolve their own paths through `sweepcore.resolve_module_path` and run correctly from any CWD.
+
 ## Quick start
 
 Requires Python 3.10+ and an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login`). No other dependencies — stdlib plus `gh`. (Floor plan: 3.10 reaches end-of-life in October 2026; the floor moves to 3.11 in the first release after, and CI already tests 3.10/3.13/3.14.)
