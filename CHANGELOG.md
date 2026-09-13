@@ -4,8 +4,12 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
-## Fixes — 2026-09-05
+## v0.6.1 — a held lane stops looking like a dead one — 2026-09-13
 
+- **forum-sweep could not tell a held lane from a dead adapter.** `last_run_by_source` only advances when a lane's every request comes back, which is the right rule for a window marker and the wrong field to read as "did this lane run". One sub answering HTTP 429 out of fifteen requests holds the whole lane, so reddit and discourse sat frozen at 2026-08-07 while both kept fetching and producing candidates for five more weeks, and nothing said so. Every selected lane now stamps `last_attempt_by_source` on every real scan, clean or held, zero candidates or partial failure, and a lane whose marker has been held for 14 days or more warns on stderr with its age. The window marker keeps its exact meaning: a held lane still re-scans its uncovered stretch next run.
+- **An "Install" section in the README.** signal-sweep is cloned, not installed, because each module's config, ledger and state live in the tree beside its script. The section says so, gives the clone-and-test sequence, and records that packaging was considered and declined on that ground rather than leaving it to look like an omission.
+- **`AGENTS.md`,** a pointer file in the [agents.md](https://agents.md/) format naming what the repo is, the human gate, and the test command, for agents that do not read `CLAUDE.md`.
+- **`CLAUDE.md` claimed every module directory carries `config.example.json`.** Ten do; `placement_health` names its template `placements.example.json` and `release_sweep` names its `channels.example.json`. The layout note now states the invariant as `*.example.json`, which is what is actually true, instead of a filename an agent would act on.
 - **cfp-sweep's scan-integration suite compared fixture deadlines against the live clock, not the frozen test date.** `cmd_scan` read `datetime.now(timezone.utc)` directly, so `ScanIntegrationTests`' fixture CFP deadlines — written relative to the module's `TODAY` test constant — quietly expired as real time passed them, most recently failing required checks on `test_candidate_shape_and_topic_match_count_leads_the_sort` (findings c74fa9dd, a6ad7b8e). The clock read is now one `_now()` call the tests can freeze, and every scan-integration fixture deadline is a `timedelta` offset from `TODAY` rather than a literal date, so the suite can't rot on the calendar again.
 - **`lint.yml` had no top-level `permissions:` block.** Added `contents: read` at the workflow level, matching `redaction-check-action`'s CI (finding 170d4b53).
 
