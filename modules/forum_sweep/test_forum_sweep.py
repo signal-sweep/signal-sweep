@@ -201,6 +201,48 @@ class DiscourseSnippetTests(unittest.TestCase):
         self.assertEqual(results[0]["snippet"], "How do I keep agent memory current?")
 
 
+class DiscourseClosedTopicTests(unittest.TestCase):
+    """Discourse search returns closed and archived topics alongside open
+    ones. A locked topic cannot take the reply, so it never becomes a
+    candidate. A topic carrying neither flag is kept, the same fail-open the
+    time filter uses."""
+
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def _scan(self, **flags):
+        topic = {
+            "id": 7,
+            "slug": "agent-memory",
+            "title": "Agent memory question",
+            "created_at": "2026-07-01T00:00:00Z",
+            "posts_count": 3,
+            "like_count": 0,
+        }
+        topic.update(flags)
+        cfg = {
+            "sources": {"discourse": {"instances": ["forum.example.com"]}},
+            "query_groups": {"memory": ["agent memory"]},
+        }
+        payload = {"topics": [topic], "posts": []}
+        with mock.patch.object(fs, "http_get_json", return_value=payload):
+            return fs.discourse_adapter(cfg, self.SINCE, [])
+
+    def test_closed_topic_is_dropped(self):
+        self.assertEqual(self._scan(closed=True, archived=False), [])
+
+    def test_archived_topic_is_dropped(self):
+        self.assertEqual(self._scan(closed=False, archived=True), [])
+
+    def test_open_topic_is_kept(self):
+        results = self._scan(closed=False, archived=False)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Agent memory question")
+
+    def test_topic_without_the_flags_is_kept(self):
+        # An instance that omits both fields loses nothing.
+        self.assertEqual(len(self._scan()), 1)
+
+
 class DiscoursePacingTests(unittest.TestCase):
     """The primary lane's per-host floor. Anonymous Discourse search is
     rate-limited per instance, and an unpaced sweep came back with 'HTTP 429'

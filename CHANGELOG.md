@@ -4,6 +4,10 @@
 > releases existed with notes living only on GitHub). From here, each release adds its entry
 > at the top in the same action as the tag.
 
+## v0.6.2 — closed topics stay out of the digest — 2026-09-14
+
+- **forum-sweep's Discourse lane surfaced topics that could not take a reply.** `/search.json` returns closed and archived topics alongside open ones, and the adapter kept every one that fell inside the window. Vendor forums run auto-close timers (Hugging Face's forum locks a topic 12 hours after its last reply), so a thread that read as live in the 2026-09-12 digest was already shut when a human went to answer it. The adapter now drops any topic flagged `closed` or `archived` before it becomes a candidate. A topic carrying neither flag is kept, the same fail-open the time filter uses, so an instance that omits the fields loses nothing.
+
 ## v0.6.1 — a held lane stops looking like a dead one — 2026-09-13
 
 - **forum-sweep could not tell a held lane from a dead adapter.** `last_run_by_source` only advances when a lane's every request comes back, which is the right rule for a window marker and the wrong field to read as "did this lane run". One sub answering HTTP 429 out of fifteen requests holds the whole lane, so reddit and discourse sat frozen at 2026-08-07 while both kept fetching and producing candidates for five more weeks, and nothing said so. Every selected lane now stamps `last_attempt_by_source` on every real scan, clean or held, zero candidates or partial failure, and a lane whose marker has been held for 14 days or more warns on stderr with its age. The window marker keeps its exact meaning: a held lane still re-scans its uncovered stretch next run.
