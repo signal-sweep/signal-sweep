@@ -252,10 +252,17 @@ class DiscoursePacingTests(unittest.TestCase):
         self.assertEqual(self.sleeps, [])
 
     def test_the_wait_is_per_host_not_lane_wide(self):
-        # Two instances, two phrases each: only the second read of each host
-        # owes anything. A lane-wide floor would charge three of the four.
+        # Two instances, two phrases each, phrase-major order: host A's
+        # second visit is the first repeat contact overall, so it pays the
+        # floor. That sleep advances the one shared clock, and host B's own
+        # second visit lands after it -- real elapsed time B's own floor
+        # accepts just as validly as a wait B paid for itself, so B owes
+        # nothing further. A lane-wide floor would instead charge three of
+        # the four requests (every one but the very first); a genuinely
+        # per-host floor with no cross-host credit would charge two. One is
+        # what phrase-major interleaving actually buys.
         self._run(["a.example.com", "b.example.com"], phrases=("a", "b"))
-        self.assertEqual(len(self.sleeps), 2)
+        self.assertEqual(self.sleeps, [fs.DISCOURSE_MIN_REQUEST_DELAY])
 
     def test_elapsed_time_counts_toward_the_hosts_floor(self):
         fs._pace_host("https://a.example.com", 1.0)
@@ -285,6 +292,56 @@ class DiscoursePacingTests(unittest.TestCase):
             with mock.patch.object(fs, "http_get", self._serve({"hits": []})):
                 fs.hn_adapter(cfg, self.SINCE, fs.LaneReport())
         self.assertEqual(self.sleeps, [0.5])
+
+    def test_example_config_keeps_every_host_under_15_requests_per_minute(self):
+        # Drives the real shipped config.example.json (3 hosts, 8 groups, 20
+        # phrases -- the exact shape finding 7770d3bf reproduced the 429 with
+        # on a fresh clone) and checks the request timestamps the adapter
+        # actually produces, not just the floor constant in isolation.
+        cfg_path = Path(fs.__file__).with_name("config.example.json")
+        cfg = fs.load_config(str(cfg_path))
+        hits = {}
+
+        def record(url, **kwargs):
+            host = url.split("/search.json")[0]
+            hits.setdefault(host, []).append(self.now)
+            return (200, json.dumps({"topics": [], "posts": []}), None)
+
+        with mock.patch.object(fs, "http_get", record):
+            fs.discourse_adapter(cfg, self.SINCE, fs.LaneReport())
+
+        self.assertTrue(hits, "the example config made no discourse requests")
+        for host, times in hits.items():
+            for t in times:
+                window = [x for x in times if t - 60 < x <= t]
+                self.assertLessEqual(
+                    len(window),
+                    15,
+                    f"{host} saw {len(window)} requests in a trailing 60s window",
+                )
+
+    def test_interleaving_across_many_hosts_avoids_the_explicit_wait(self):
+        # At the module's real instance counts (finding 7770d3bf measured 23),
+        # phrase-major order means a host's next turn only comes after every
+        # OTHER host has been read, and that reading takes real time. Model
+        # each simulated fetch as costing 0.3s of wall clock: with 20 hosts,
+        # cycling through the other 19 before a host's second visit already
+        # spends 5.7s, more than the 4.1s floor, so no explicit sleep should
+        # be needed at all. Under the old instance-major order this same
+        # config would sleep the floor on every repeat visit to a host.
+        hosts = [f"host{i}.example.com" for i in range(20)]
+
+        def serve_with_latency(url, **kwargs):
+            self.now += 0.3
+            return (200, json.dumps({"topics": [], "posts": []}), None)
+
+        cfg = {
+            "sources": {"discourse": {"instances": hosts}},
+            "query_groups": {"memory": ["a", "b"]},
+        }
+        with mock.patch.object(fs, "http_get", serve_with_latency):
+            fs.discourse_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps, [])
 
 
 class RedditTimeParamTests(unittest.TestCase):

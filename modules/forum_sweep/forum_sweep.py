@@ -106,17 +106,31 @@ HTTP_TIMEOUT = 20
 REQUEST_DELAY = 0.0
 
 # Pacing floor for the discourse lane, held PER HOST. Anonymous /search.json
-# is rate-limited per instance, and an unpaced sweep 429s across every
-# configured instance at once (observed 2026-09-05 on forum.cursor.com,
-# community.openai.com and discuss.huggingface.co), which holds the window for
-# the module's primary lane run after run -- the held stamp becomes the normal
-# outcome rather than the exception.
+# is rate-limited per instance, and the limit is a genuine sustained quota,
+# not a burst guard: Discourse's own default is
+# rate_limit_search_anon_user_per_minute: 15 (discourse/discourse
+# config/site_settings.yml), so a steady one-request-per-second pace (60/min)
+# blows through it just as surely as a rapid burst does -- which is exactly
+# what the old 1.0s floor did: every host still saw ~60 req/min and 429d from
+# phrase 16 of 20 onward, on all 23 configured hosts (finding 7770d3bf,
+# 2026-09-23). An unpaced sweep 429s across every configured instance at once
+# (observed 2026-09-05 on forum.cursor.com, community.openai.com and
+# discuss.huggingface.co), which holds the window for the module's primary
+# lane run after run -- the held stamp becomes the normal outcome rather than
+# the exception.
+#
+# 60s / 15 requests = 4.0s is the minimum spacing that keeps any 60s window at
+# or under the limit; 4.1s adds a small margin for clock jitter.
 #
 # Per host, not module-wide, because the limit is per instance. The lane
-# iterates instance x phrase, so the time spent reading one instance is time
-# the next one has already waited; charging every request the full floor would
-# slow the sweep by the number of instances for no extra politeness.
-DISCOURSE_MIN_REQUEST_DELAY = 1.0
+# iterates phrase x instance (phrase outer, instance inner -- see
+# discourse_adapter), so every OTHER configured host read between two visits
+# to the same one is real elapsed time that already counts against this floor
+# (_pace_host credits it); at the module's real instance counts the explicit
+# sleep the floor demands is small or zero. Only a single- or few-instance
+# config pays close to the full 4.1s on every request, which is also the
+# config where that one host's own rate is the whole scan's pace anyway.
+DISCOURSE_MIN_REQUEST_DELAY = 4.1
 
 # host -> time.monotonic() of the last request this process sent it. Only the
 # per-host lanes touch it; a module-wide throttle needs no memory.
@@ -377,26 +391,32 @@ def _lane_query_groups(cfg, lane):
 
 
 def discourse_adapter(cfg, since_dt, errors):
-    """PRIMARY lane. For each configured Discourse instance, for each query
-    phrase, GET <instance>/search.json?q=<term> and parse the topics array.
+    """PRIMARY lane. For each query phrase, for each configured Discourse
+    instance, GET <instance>/search.json?q=<term> and parse the topics array.
     Degrades gracefully on Cloudflare/login/non-200 (errors[], continue).
 
-    Paced per host at DISCOURSE_MIN_REQUEST_DELAY: anonymous search is
-    rate-limited per instance, and an unpaced burst 429s the lane into a held
-    window."""
+    Paced per host at DISCOURSE_MIN_REQUEST_DELAY: anonymous search is a
+    sustained per-minute quota, not a burst guard (see the constant's own
+    comment). The loop is phrase-major -- phrase outer, instance inner -- so
+    two requests to the SAME host are separated by every other configured
+    instance in between; that elapsed time already counts against the floor
+    (_pace_host credits it), so at real instance counts the explicit sleep the
+    floor demands is small or zero rather than paid on every request."""
     results = []
     src = cfg["sources"].get("discourse") or {}
-    instances = src.get("instances") or []
     groups = _lane_query_groups(cfg, "discourse")
-    for instance in instances:
+    hosts = []
+    for instance in src.get("instances") or []:
         host = instance.strip().rstrip("/")
         if not host:
             continue
         if "://" not in host:
             host = "https://" + host
-        for pattern, phrases in groups.items():
-            for phrase in phrases:
-                q = urllib.parse.quote(phrase)
+        hosts.append((instance, host))
+    for pattern, phrases in groups.items():
+        for phrase in phrases:
+            q = urllib.parse.quote(phrase)
+            for instance, host in hosts:
                 url = f"{host}/search.json?q={q}"
                 data = http_get_json(
                     url,
