@@ -442,6 +442,8 @@ def discourse_adapter(cfg, since_dt, errors):
                 for t in topics:
                     if not isinstance(t, dict):
                         continue
+                    if not _accepts_replies(t):
+                        continue
                     slug = t.get("slug")
                     tid = t.get("id")
                     if slug and tid:
@@ -1228,6 +1230,14 @@ def _within_window(created, since_dt):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt >= since_dt
+
+
+def _accepts_replies(topic):
+    """False for a Discourse topic flagged `closed` or `archived`. Search still
+    returns locked topics, and a candidate nobody can answer costs a digest
+    seat and a human read for nothing. A topic carrying neither flag is kept
+    (fail-open, like the time filter)."""
+    return not (topic.get("closed") or topic.get("archived"))
 
 
 ADAPTERS = {
