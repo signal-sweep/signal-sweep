@@ -10,6 +10,7 @@ on the second use, not the first" rule):
   - paths:   resolve_module_path  (module-anchored, never CWD-anchored)
   - state:   load_state, write_json_atomic
   - ledger:  posted_urls, density_counts, append_ledger
+  - dedup:   scoped_key           (namespace a seen-store or exclusion key by subject)
   - gh:      gh, gh_graphql   (auth failure -> exit with a 'gh auth login' hint)
   - http:    http_get         (public read with 429/503 Retry-After backoff)
   - window:  LaneReport, note_fetch_ok, parse_stamp, window_start, earned_stamp,
@@ -300,6 +301,24 @@ def append_ledger(ledger_file, entry):
     ledger_file.parent.mkdir(parents=True, exist_ok=True)
     with ledger_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry) + "\n")
+
+
+# --- dedup keys ---------------------------------------------------------------
+
+
+def scoped_key(subject, item):
+    """A dedup key namespaced by subject: case-folded "<subject>::<item>".
+
+    A seen-store or exclusion set keyed on the item alone conflates every
+    subject that shares the store: a module can evaluate the same item once
+    per subject (list-sweep's own_repo, for instance), but a shared state
+    file or registry has no subject of its own to tell those evaluations
+    apart, so an item marked seen or excluded for one subject reads as seen
+    or excluded for all of them (signal-sweep#40). Build the key with this on
+    both the write side and the read side so a subject and an item fold
+    identically wherever they meet.
+    """
+    return f"{subject.strip().lower()}::{item.strip().lower()}"
 
 
 # --- gh ----------------------------------------------------------------------

@@ -353,12 +353,54 @@ class ScanIntegrationTests(unittest.TestCase):
                         "expect": "x",
                     }
                 ],
-                seen={"seenrepo/awesome-ai-agents": "2099-01-01"},
+                seen={
+                    ls.scoped_key(
+                        CONFIG["own_repo"], "seenrepo/awesome-ai-agents"
+                    ): "2099-01-01"
+                },
             )
         repos = {c["repo"] for c in payload["candidates"]}
         self.assertEqual(repos, {"fresh/awesome-claude-code"})
         self.assertEqual(payload["dropped"]["placed"], 1)
         self.assertEqual(payload["dropped"]["seen"], 1)
+
+    def test_seen_and_placed_do_not_cross_subjects(self):
+        # The bug in signal-sweep#40: a venue surfaced or placed for one
+        # subject read as seen/placed for every other subject sharing the
+        # same state_dir and placements_path. Both records below name a
+        # DIFFERENT subject ("other/subject-b"), so this scan (subject
+        # "me/my-project", the CONFIG default) must treat the venue as fresh.
+        hits = [
+            {
+                "fullName": "shared/awesome-thing",
+                "description": "claude-code",
+                "stargazersCount": 500,
+                "url": "https://github.com/shared/awesome-thing",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, payload = self._run_scan(
+                tmp,
+                hits,
+                "Open a pull request.",
+                placements=[
+                    {
+                        "url": "https://github.com/shared/awesome-thing",
+                        "expect": "x",
+                        "project": "other/subject-b",
+                    }
+                ],
+                seen={
+                    ls.scoped_key(
+                        "other/subject-b", "shared/awesome-thing"
+                    ): "2026-01-01"
+                },
+            )
+        self.assertEqual(rc, 0)
+        repos = {c["repo"] for c in payload["candidates"]}
+        self.assertEqual(repos, {"shared/awesome-thing"})
+        self.assertEqual(payload["dropped"]["placed"], 0)
+        self.assertEqual(payload["dropped"]["seen"], 0)
 
     def test_star_floor_and_own_repo_dropped(self):
         hits = [
