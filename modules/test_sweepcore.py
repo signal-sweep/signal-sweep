@@ -237,6 +237,26 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(counts[90], 2)  # 5-day + 60-day
 
 
+class DedupKeyTests(unittest.TestCase):
+    def test_folds_case_and_whitespace(self):
+        self.assertEqual(
+            sc.scoped_key(" Me/My-Project ", " Owner/Repo "),
+            "me/my-project::owner/repo",
+        )
+
+    def test_different_subjects_produce_different_keys(self):
+        self.assertNotEqual(
+            sc.scoped_key("me/project-a", "owner/repo"),
+            sc.scoped_key("me/project-b", "owner/repo"),
+        )
+
+    def test_same_subject_and_item_are_stable(self):
+        self.assertEqual(
+            sc.scoped_key("me/project", "owner/repo"),
+            sc.scoped_key("me/project", "owner/repo"),
+        )
+
+
 class GhTests(unittest.TestCase):
     def test_gh_parses_json(self):
         with mock.patch.object(
