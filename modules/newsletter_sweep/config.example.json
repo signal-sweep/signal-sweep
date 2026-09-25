@@ -69,7 +69,7 @@
       "url": "https://bensbites.com",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://bensbites.com",
-      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are partnership and support (shanice@bensbites.com, team@bensbites.co) - paid or support, not a pitch path.",
+      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are a named partnerships contact and the support address team@bensbites.co - paid or support, not a pitch path.",
       "audience_note": "AI-focused newsletter on agents, tools, and builder news; 170,000+ subscribers. Note: .com is the canonical, currently-delivering domain - the older .co domain's newsletter delivery is dead, do not use it.",
       "alive_markers": ["What I'm learning building with agents"]
     },
@@ -87,7 +87,7 @@
       "url": "https://www.pointer.io/",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://www.pointer.io/",
-      "format_note": "No editorial submission mechanism found; the one published address (suraj@pointer.io) is for paid sponsorship. Curated reading-list format (outside writing, summarized) rather than a launch/tool-mention outlet.",
+      "format_note": "No editorial submission mechanism found; the one published address is a named contact for paid sponsorship. Curated reading-list format (outside writing, summarized) rather than a launch/tool-mention outlet.",
       "audience_note": "Twice-weekly engineering-leadership reading list (leadership, management, career growth) - a narrow fit unless your project is about engineering management, not general dev tooling. ~60,000 subscribers. Caveat: the site returns HTTP 403 to non-browser fetches, so this module's freshness check will likely report it unreachable even when the site is fine - verify by hand in a real browser before trusting that status.",
       "alive_markers": ["Essential Reading For Engineering Leaders"]
     },

@@ -137,7 +137,7 @@ DISCUSSION_FIELDS = """
   }
 """
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 # Descriptive UA so arXiv operators can identify the tool, matching the
 # honesty etiquette forum_sweep already established for the other read-only
 # HTTP lanes in this repo.
