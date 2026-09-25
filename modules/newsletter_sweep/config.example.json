@@ -29,11 +29,11 @@
       "name": "Console",
       "url": "https://console.dev/",
       "submit_channel": "email",
-      "submit_url_or_address": "hello@console.dev",
-      "format_note": "Email hello@console.dev with the tool's details. They look for developer tools with self-serve signup (no sales call needed to try it), workflow integration, active maintenance, and good docs; no sponsored reviews. Roughly 2-3 tools featured per week.",
+      "submit_url_or_address": "hello@console.dev", "_redaction_ok_address": "redaction-ok",
+      "format_note": "Email hello@console.dev with the tool's details. They look for developer tools with self-serve signup (no sales call needed to try it), workflow integration, active maintenance, and good docs; no sponsored reviews. Roughly 2-3 tools featured per week.", "_redaction_ok_note": "redaction-ok",
       "audience_note": "Weekly devtools roundup for CTOs, engineering managers, and experienced developers; 30k+ subscribers, 77% with 5+ years coding experience.",
       "check_url": "https://console.dev/selection-criteria",
-      "alive_markers": ["Submit a tool", "hello@console.dev"]
+      "alive_markers": ["Submit a tool", "hello@console.dev"], "_redaction_ok_markers": "redaction-ok"
     },
     {
       "name": "Changelog News",
@@ -58,18 +58,18 @@
       "name": "Cooperpress (JavaScript Weekly / Node Weekly family)",
       "url": "https://cooperpress.com/",
       "submit_channel": "email",
-      "submit_url_or_address": "editor@cooperpress.com",
+      "submit_url_or_address": "editor@cooperpress.com", "_redaction_ok_address": "redaction-ok",
       "format_note": "One shared editorial address covers the whole family: JavaScript Weekly, Node Weekly, Frontend Focus, Ruby Weekly, Golang Weekly, React Status, Postgres Weekly (Python Weekly is a different publisher, not Cooperpress). No formal submission guidelines are published; the observed house format is a link plus a short blurb. Pick the one newsletter in the family that actually matches your project before pitching.",
       "audience_note": "JavaScript Weekly alone reaches 170,000+ developers; the family together spans JS, Node, frontend, Ruby, Go, React, and Postgres.",
       "check_url": "https://cooperpress.com/contact/",
-      "alive_markers": ["editor@cooperpress.com", "the ideal way to get a quick response is by emailing us"]
+      "alive_markers": ["editor@cooperpress.com", "the ideal way to get a quick response is by emailing us"], "_redaction_ok_markers": "redaction-ok"
     },
     {
       "name": "Ben's Bites",
       "url": "https://bensbites.com",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://bensbites.com",
-      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are partnership and support (shanice@bensbites.com, team@bensbites.co) - paid or support, not a pitch path.",
+      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are a named partnerships contact and the support address team@bensbites.co - paid or support, not a pitch path.", "_redaction_ok_note": "redaction-ok",
       "audience_note": "AI-focused newsletter on agents, tools, and builder news; 170,000+ subscribers. Note: .com is the canonical, currently-delivering domain - the older .co domain's newsletter delivery is dead, do not use it.",
       "alive_markers": ["What I'm learning building with agents"]
     },
@@ -78,7 +78,7 @@
       "url": "https://www.therundown.ai",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://www.therundown.ai",
-      "format_note": "No free submission path found; the only intake is a paid-advertising Typeform. support@therundown.ai is a general contact address, not a documented tips channel.",
+      "format_note": "No free submission path found; the only intake is a paid-advertising Typeform. support@therundown.ai is a general contact address, not a documented tips channel.", "_redaction_ok_note": "redaction-ok",
       "audience_note": "AI news digest; 2,000,000+ readers across AI, Tech, and Robotics editions.",
       "alive_markers": ["Get the latest AI news, understand why it matters"]
     },
@@ -87,7 +87,7 @@
       "url": "https://www.pointer.io/",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://www.pointer.io/",
-      "format_note": "No editorial submission mechanism found; the one published address (suraj@pointer.io) is for paid sponsorship. Curated reading-list format (outside writing, summarized) rather than a launch/tool-mention outlet.",
+      "format_note": "No editorial submission mechanism found; the one published address is a named contact for paid sponsorship. Curated reading-list format (outside writing, summarized) rather than a launch/tool-mention outlet.",
       "audience_note": "Twice-weekly engineering-leadership reading list (leadership, management, career growth) - a narrow fit unless your project is about engineering management, not general dev tooling. ~60,000 subscribers. Caveat: the site returns HTTP 403 to non-browser fetches, so this module's freshness check will likely report it unreachable even when the site is fine - verify by hand in a real browser before trusting that status.",
       "alive_markers": ["Essential Reading For Engineering Leaders"]
     },
