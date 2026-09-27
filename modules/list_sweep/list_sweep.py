@@ -15,7 +15,9 @@ line is the human's to respect.
 
 Dedup: a seen-store (every surfaced list is surfaced once) plus, via an
 optional config path, the placement-health placements.json registry, so lists
-you are already in or have already submitted to are excluded.
+you are already in or have already submitted to are excluded. Both are scoped
+to the config's own_repo, so a list evaluated for one subject stays eligible
+for a different one run from the same installation.
 
 Judgment - the fit verdict, the submission copy, the decision to submit - is
 NOT here. That belongs to a human, with whatever assistant they choose, behind
@@ -264,12 +266,32 @@ def fit_score(repo_full, description, cfg):
     return sum(1 for term in terms if term and term in haystack)
 
 
+def scoped_key(subject, item):
+    """A dedup key namespaced by subject: case-folded "<subject>::<item>".
+
+    Every config that shares a state_dir and placements_path shares one
+    seen-store and one placements registry, and neither has a subject of its
+    own. Keyed on the list repo alone, a list marked seen or placed for one
+    own_repo reads as seen or placed for all of them (signal-sweep#40). Build
+    the key with this on both the write side and the read side so a subject
+    and a list fold identically wherever they meet.
+    """
+    return f"{subject.strip().lower()}::{item.strip().lower()}"
+
+
 def load_placements(path, errors):
     """Optional dedup source: repo names already in a placement-health registry.
 
     Reads the placements.json the placement-health module maintains and pulls
-    every owner/name it can find from each entry's url/expect, so a list you
-    are already in (or have a pending submission to) never resurfaces here.
+    every owner/name it can find from each entry's url, so a list you are
+    already in (or have a pending submission to) never resurfaces here.
+
+    An entry may carry a `project`, naming the one subject that placement is
+    for; it is then excluded only for that subject, stored under
+    scoped_key(project, repo). An entry with no `project` applies to every
+    subject - the shape every registry in the wild uses today - and is kept
+    under the bare repo key so it goes on excluding everyone, unchanged from
+    before subject-scoping existed (signal-sweep#40).
     """
     listed = set()
     if not path:
@@ -289,9 +311,13 @@ def load_placements(path, errors):
     for entry in data.get("placements", []) or []:
         if not isinstance(entry, dict):
             continue
-        url = entry.get("url", "")
-        repo = repo_from_url(url)
-        if repo:
+        repo = repo_from_url(entry.get("url", ""))
+        if not repo:
+            continue
+        project = entry.get("project")
+        if project:
+            listed.add(scoped_key(project, repo))
+        else:
             listed.add(repo.lower())
     return listed
 
@@ -435,6 +461,7 @@ def cmd_scan(args):
     submitted = submitted_repos(ledger_file)
     already_listed = load_placements(cfg.get("placements_path"), advisory)
     errors = list(report) + advisory
+    subject = cfg["own_repo"]
 
     kept = []
     dropped = {"seen": 0, "submitted": 0, "placed": 0, "own": 0, "stars": 0, "fit": 0}
@@ -445,16 +472,19 @@ def cmd_scan(args):
         if key in batch:
             dropped["dup"] += 1
             continue
-        if key == cfg["own_repo"].lower():
+        if key == subject.lower():
             dropped["own"] += 1
             continue
-        if key in seen:
+        # Seen and placed are PER SUBJECT: the same list evaluated for a
+        # different own_repo is neither, so both checks fold the subject into
+        # the key rather than testing the bare repo alone (signal-sweep#40).
+        if scoped_key(subject, key) in seen:
             dropped["seen"] += 1
             continue
         if key in submitted:
             dropped["submitted"] += 1
             continue
-        if key in already_listed:
+        if key in already_listed or scoped_key(subject, key) in already_listed:
             dropped["placed"] += 1
             continue
         if cand["lane"] == "query" and cand["stars"] < cfg["min_stars"]:
@@ -485,7 +515,7 @@ def cmd_scan(args):
     for cand in kept:
         # Retrieved and shown to the human, so a re-scan of a held window will
         # not re-surface it; only the never-retrieved rest comes back.
-        seen[cand["repo"].lower()] = today
+        seen[scoped_key(subject, cand["repo"])] = today
     cutoff = (now - timedelta(days=cfg["seen_retention_days"])).date().isoformat()
     state["seen"] = {r: d for r, d in seen.items() if d >= cutoff}
     if held:
