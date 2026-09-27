@@ -30,7 +30,7 @@
       "url": "https://console.dev/",
       "submit_channel": "email",
       "submit_url_or_address": "hello@console.dev", "_redaction_ok_address": "redaction-ok",
-      "format_note": "Email hello@console.dev with the tool's details. They look for developer tools with self-serve signup (no sales call needed to try it), workflow integration, active maintenance, and good docs; no sponsored reviews. Roughly 2-3 tools featured per week.", "_redaction_ok_note": "redaction-ok",
+      "format_note": "Email the submission address with the tool's details. They look for developer tools with self-serve signup (no sales call needed to try it), workflow integration, active maintenance, and good docs; no sponsored reviews. Roughly 2-3 tools featured per week.",
       "audience_note": "Weekly devtools roundup for CTOs, engineering managers, and experienced developers; 30k+ subscribers, 77% with 5+ years coding experience.",
       "check_url": "https://console.dev/selection-criteria",
       "alive_markers": ["Submit a tool", "hello@console.dev"], "_redaction_ok_markers": "redaction-ok"
@@ -69,7 +69,7 @@
       "url": "https://bensbites.com",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://bensbites.com",
-      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are a named partnerships contact and the support address team@bensbites.co - paid or support, not a pitch path.", "_redaction_ok_note": "redaction-ok",
+      "format_note": "No editorial tip/submission channel is published (the old community link-sharing board is gone). The only verified addresses are a named partnerships contact and a general support address - paid or support, not a pitch path.",
       "audience_note": "AI-focused newsletter on agents, tools, and builder news; 170,000+ subscribers. Note: .com is the canonical, currently-delivering domain - the older .co domain's newsletter delivery is dead, do not use it.",
       "alive_markers": ["What I'm learning building with agents"]
     },
@@ -78,7 +78,7 @@
       "url": "https://www.therundown.ai",
       "submit_channel": "unknown",
       "submit_url_or_address": "https://www.therundown.ai",
-      "format_note": "No free submission path found; the only intake is a paid-advertising Typeform. support@therundown.ai is a general contact address, not a documented tips channel.", "_redaction_ok_note": "redaction-ok",
+      "format_note": "No free submission path found; the only intake is a paid-advertising Typeform. The published support address is a general contact, not a documented tips channel.",
       "audience_note": "AI news digest; 2,000,000+ readers across AI, Tech, and Robotics editions.",
       "alive_markers": ["Get the latest AI news, understand why it matters"]
     },
