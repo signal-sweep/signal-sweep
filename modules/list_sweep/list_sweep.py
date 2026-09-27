@@ -53,7 +53,6 @@ from sweepcore import (  # noqa: E402
     load_state,
     note_fetch_ok,
     resolve_module_path,
-    scoped_key,
     window_start,
     write_json_atomic,
 )
@@ -265,6 +264,19 @@ def fit_score(repo_full, description, cfg):
         k.lower() for k in cfg["search_keywords"]
     }
     return sum(1 for term in terms if term and term in haystack)
+
+
+def scoped_key(subject, item):
+    """A dedup key namespaced by subject: case-folded "<subject>::<item>".
+
+    Every config that shares a state_dir and placements_path shares one
+    seen-store and one placements registry, and neither has a subject of its
+    own. Keyed on the list repo alone, a list marked seen or placed for one
+    own_repo reads as seen or placed for all of them (signal-sweep#40). Build
+    the key with this on both the write side and the read side so a subject
+    and a list fold identically wherever they meet.
+    """
+    return f"{subject.strip().lower()}::{item.strip().lower()}"
 
 
 def load_placements(path, errors):

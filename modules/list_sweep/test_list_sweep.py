@@ -203,6 +203,26 @@ class RepoFromUrlTests(unittest.TestCase):
         self.assertIsNone(ls.repo_from_url("https://example.com/foo"))
 
 
+class ScopedKeyTests(unittest.TestCase):
+    def test_folds_case_and_whitespace(self):
+        self.assertEqual(
+            ls.scoped_key(" Me/My-Project ", " Owner/Repo "),
+            "me/my-project::owner/repo",
+        )
+
+    def test_different_subjects_produce_different_keys(self):
+        self.assertNotEqual(
+            ls.scoped_key("me/project-a", "owner/repo"),
+            ls.scoped_key("me/project-b", "owner/repo"),
+        )
+
+    def test_same_subject_and_item_are_stable(self):
+        self.assertEqual(
+            ls.scoped_key("me/project", "owner/repo"),
+            ls.scoped_key("me/project", "owner/repo"),
+        )
+
+
 class PlacementsDedupTests(unittest.TestCase):
     def test_loads_repos_from_placements_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
