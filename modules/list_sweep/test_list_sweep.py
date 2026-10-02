@@ -202,6 +202,17 @@ class RepoFromUrlTests(unittest.TestCase):
     def test_non_github(self):
         self.assertIsNone(ls.repo_from_url("https://example.com/foo"))
 
+    def test_github_only_in_path_or_host_suffix(self):
+        self.assertIsNone(ls.repo_from_url("https://evil.example/github.com/a/b"))
+        self.assertIsNone(ls.repo_from_url("https://github.com.evil.example/a/b"))
+        self.assertIsNone(ls.repo_from_url("https://notgithub.com/a/b"))
+
+    def test_schemeless_and_www(self):
+        self.assertEqual(ls.repo_from_url("github.com/owner/repo"), "owner/repo")
+        self.assertEqual(
+            ls.repo_from_url("https://www.github.com/owner/repo/"), "owner/repo"
+        )
+
 
 class ScopedKeyTests(unittest.TestCase):
     def test_folds_case_and_whitespace(self):
