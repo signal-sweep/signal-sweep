@@ -8,7 +8,7 @@ Humans should start at [`README.md`](README.md), contributors at
 
 ## What this repository is
 
-A toolkit of twelve standalone discovery modules that sweep public venues for
+A toolkit of eleven standalone discovery modules that sweep public venues for
 threads, lists, papers and CFPs a project could usefully answer or join, and
 write each one a ranked shortlist for a human to judge. Nothing posts. Nothing
 runs on a timer.
