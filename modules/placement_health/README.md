@@ -42,4 +42,4 @@ No dependencies beyond the Python standard library, and no GitHub CLI needed (it
 | `kind` | `list` / `directory` / `page` — informational |
 | `status` | `live` (default) or `pending` (submission not yet merged) |
 
-The example registry is real: the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project's own placements, including a pending list submission so you can see how that state reads.
+The example registry is a snapshot of a real one as of 2026-10-03: the maintainers' own repos and their list submissions, including pending ones so you can see how that state reads.
