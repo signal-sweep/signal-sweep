@@ -30,3 +30,6 @@ candidates.*.json
 candidates_*.json
 state-*/
 state_*/
+# Every module's public template stays tracked. Without this line the
+# config.*.json pattern above also swallows a new module's config.example.json.
+!*.example.json
