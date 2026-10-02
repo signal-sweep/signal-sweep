@@ -7,6 +7,7 @@
 ## v0.6.2 — closed topics stay out of the digest — 2026-09-14
 
 - **forum-sweep's Discourse lane surfaced topics that could not take a reply.** `/search.json` returns closed and archived topics alongside open ones, and the adapter kept every one that fell inside the window. Vendor forums run auto-close timers (Hugging Face's forum locks a topic 12 hours after its last reply), so a thread that read as live in the 2026-09-12 digest was already shut when a human went to answer it. The adapter now drops any topic flagged `closed` or `archived` before it becomes a candidate. A topic carrying neither flag is kept, the same fail-open the time filter uses, so an instance that omits the fields loses nothing.
+- **forum-sweep's Discourse lane paced itself four times too fast.** The per-host floor was 1 second, about 60 requests a minute, against Discourse's default of 15 anonymous searches a minute. Every configured host answered HTTP 429 from the sixteenth phrase of twenty onward, which held the lane's window marker and grew the re-scan window each run. The floor is now 4.1 seconds per host. The adapter also runs each phrase across every instance before it moves to the next phrase, so time spent on the other hosts counts toward the wait and a config with many instances rarely sleeps at all. A single-instance config pays close to the full floor on every request (#54).
 
 ## v0.6.1 — a held lane stops looking like a dead one — 2026-09-13
 
