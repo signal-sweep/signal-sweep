@@ -316,25 +316,38 @@ def http_get_json(url, errors, label, host=None, delay=None):
     return parsed
 
 
-def http_get_xml(url, errors, label, delay=None):
+def http_get_xml(url, errors, label, delay=None, host=None):
     """GET a URL and parse XML. Fail-soft, the same shape as http_get_json:
     any error appends to errors[] and returns None so the caller continues to
     the next tag/instance. Delegates the fetch to sweepcore.http_get, which
-    adds 429/503 Retry-After backoff.
+    adds 429/503 backoff (Retry-After, or an x-ratelimit-reset window).
 
     `delay` overrides the module-wide REQUEST_DELAY throttle for this one call,
     so a lane with a tighter rate limit than the rest of the module can pace
-    itself without the operator having to slow every other lane to match. Only
-    the reddit lane passes it today (see REDDIT_MIN_REQUEST_DELAY).
+    itself without the operator having to slow every other lane to match.
+    `host` turns that wait into owed-time pacing against one host (_pace_host):
+    the first request to it is immediate and a later one sleeps only what is
+    still owed, where the plain throttle sleeps the full delay before every
+    request including the first. The floor is then measured from when the
+    response came BACK, not from when the request went out: sweepcore.http_get
+    may have sat out a rate-limit window and retried inside that one call, and
+    spacing the next request from the original send time would drop it straight
+    into the window the retry just opened. Only the reddit lane passes either
+    today (see REDDIT_MIN_REQUEST_DELAY); every other caller keeps the
+    module-wide REQUEST_DELAY exactly as before.
     """
     wait = REQUEST_DELAY if delay is None else delay
-    if wait > 0:
+    if host is not None:
+        _pace_host(host, wait)
+    elif wait > 0:
         time.sleep(wait)
     status, body, err = http_get(
         url,
         timeout=HTTP_TIMEOUT,
         headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, text/xml"},
     )
+    if host is not None:
+        _LAST_REQUEST_AT[host] = time.monotonic()
     if err:
         errors.append(f"{label}: {err}")
         return None
@@ -359,11 +372,14 @@ def _lane_query_groups(cfg, lane):
     """The query_groups a phrase-driven lane iterates.
 
     `sources.<lane>.groups` optionally narrows one lane to a subset of the
-    shared query_groups. Every phrase lane costs one request per sub/site/
-    instance x phrase, so a lane with a hard request budget (reddit's anonymous
-    429 threshold) needs a way to stay inside it that does not shrink
-    query_groups for the lanes with no such limit. Absent, empty, or not a list
-    means all groups -- the behaviour every lane had before this key existed.
+    shared query_groups. Request cost scales with the phrases a lane runs:
+    most phrase lanes spend one request per site/instance x phrase, and reddit
+    spends one per PHRASE however many subs are configured (they share a
+    request) but may send only one a minute, so each extra phrase there is
+    another minute of scan. A lane with a hard request budget needs a way to
+    stay inside it that does not shrink query_groups for the lanes with no
+    such limit. Absent, empty, or not a list means all groups -- the behaviour
+    every lane had before this key existed.
 
     An unknown slug is a config typo rather than a silent no-op: it warns once
     on stderr and is skipped, so a mistyped group cannot quietly turn a lane
@@ -575,14 +591,40 @@ def lobsters_adapter(cfg, since_dt, errors):
 # a media: prefix this adapter does not read).
 _REDDIT_ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
-# Pacing floor for the reddit lane only. The anonymous feed read starts
-# returning HTTP 429 after roughly 20 quick requests (observed 2026-08-29),
-# far sooner than any other lane in this module, and one lane's limit is no
-# reason to slow the others -- so this floors reddit's own pace while
-# request_delay_seconds keeps governing everything else. Paired with the
-# sources.reddit.groups whitelist, which caps how many requests the lane
-# makes at all (subs x phrases in the selected groups).
-REDDIT_MIN_REQUEST_DELAY = 2.0
+# Pacing floor for the reddit lane only. The anonymous feed budget is ONE
+# request per 60-second window (observed 2026-10-02: a first request answers
+# 200 with `x-ratelimit-used: 1`, `x-ratelimit-remaining: 0.0`,
+# `x-ratelimit-reset: 59`, and anything sent before the reset answers HTTP
+# 429). The earlier reading of this limit, "429 after roughly 20 quick
+# requests" (2026-08-29), no longer describes it: at the 2.0s floor that
+# reading produced, every request after the first landed inside the first
+# one's window and failed, and one failed request holds the whole lane's
+# marker. 60s is the window; 61s adds a second for clock jitter.
+#
+# Held between reddit's own requests only, as owed time (see http_get_xml's
+# `host`): the lane's first request is immediate, so a lane that needs one
+# request never sleeps, and one lane's limit is no reason to slow the others
+# -- request_delay_seconds keeps governing everything else. A budget this
+# small is why every configured sub shares one request (reddit_adapter), so
+# the lane costs one request per PHRASE in its selected groups however many
+# subs it searches. The sources.reddit.groups whitelist caps how many phrases
+# that is: each one past the first costs another minute of scan.
+REDDIT_MIN_REQUEST_DELAY = 61.0
+
+# The key reddit's requests are paced under in _LAST_REQUEST_AT. The limit is
+# per client, not per subreddit, so every request shares the one entry.
+_REDDIT_HOST = "https://www.reddit.com"
+
+# Entries requested per feed read. Reddit listings return 25 items unless
+# asked for more and cap at 100; with one request covering every configured
+# sub, the default page would cut an ordinary window short. A response that
+# comes back this full may itself be cut short at the cap, so the adapter
+# says so on stderr.
+REDDIT_FEED_LIMIT = 100
+
+# /r/<sub>/ in an entry permalink. One request now spans every configured sub,
+# so the entry's own link is the only thing that says which sub it came from.
+_REDDIT_SUB_RE = re.compile(r"/r/([^/?#]+)/")
 
 _WS_RE = re.compile(r"\s+")
 
@@ -615,12 +657,38 @@ def _atom_iso(stamp):
     return dt.isoformat()
 
 
-def _reddit_entry_to_candidate(entry, sub, pattern, since_dt):
+def _reddit_sub_for(href, subs):
+    """The subreddit an entry's permalink belongs to, for its `source` label.
+
+    One request spans every configured sub, so the feed no longer says which
+    sub a hit came from; the entry's own link does
+    (https://www.reddit.com/r/<Sub>/comments/...). A sub that matches a
+    configured one case-insensitively is returned in the CONFIGURED spelling,
+    so the `r/<sub>` label -- and the per-source cap keyed on it -- reads
+    exactly as it did when each sub had a request of its own. A sub that is
+    not configured (a crosspost surfaced under its home sub) keeps the link's
+    spelling. A link with no /r/<sub>/ segment at all falls back to the joined
+    list the request searched, which for a one-sub config is that sub.
+    """
+    match = _REDDIT_SUB_RE.search(href)
+    if not match:
+        return "+".join(subs)
+    found = match.group(1)
+    for sub in subs:
+        if sub.lower() == found.lower():
+            return sub
+    return found
+
+
+def _reddit_entry_to_candidate(entry, subs, pattern, since_dt):
     """One Atom <entry> to the shared candidate schema, or None to skip it.
+
+    `subs` is the configured list the request searched; the candidate is
+    attributed to whichever sub its own permalink names (_reddit_sub_for).
 
     Defensive on every field: this is untrusted external content, and a single
     entry missing a link or carrying an unreadable timestamp must cost that
-    entry only, never the rest of the sub's results.
+    entry only, never the rest of the feed's results.
     """
     link = entry.find(f"{_REDDIT_ATOM_NS}link")
     # The permalink is an href attribute, not element text, and it arrives
@@ -639,7 +707,7 @@ def _reddit_entry_to_candidate(entry, sub, pattern, since_dt):
         url=href,
         title=(entry.findtext(f"{_REDDIT_ATOM_NS}title") or "").strip(),
         created=created,
-        source=f"r/{sub}",
+        source=f"r/{_reddit_sub_for(href, subs)}",
         # The feed carries no score and no comment count -- see the adapter
         # docstring for what that costs the ranking.
         score_or_stars=0,
@@ -659,13 +727,38 @@ def reddit_adapter(cfg, since_dt, errors):
     """Reddit — DISCOVERY-ONLY, opt-in (gated behind sources.reddit.enabled,
     default FALSE).
 
-    Transport is the public per-subreddit Atom feed:
-    GET /r/<sub>/search.rss?q=<phrase>&restrict_sr=1&sort=new&t=<bucket>.
+    Transport is the public Atom search feed, one request per PHRASE:
+    GET /r/<SubA>+<SubB>+<SubC>/search.rss
+        ?q=<phrase>&restrict_sr=1&sort=new&t=<bucket>&limit=100
+    Every configured sub is joined with `+` in the path, so a phrase costs a
+    single request however many subs it searches, and each entry's own
+    permalink says which sub it came from. The lane used to send one request
+    per sub per phrase; the anonymous budget turned out to be one request a
+    MINUTE (see REDDIT_MIN_REQUEST_DELAY), and sharing the request across subs
+    is what keeps the count down to the phrases alone. A second or later
+    request waits out the minute first.
+
+    `q` is the bare phrase. Do NOT fold a group's phrases into one request
+    with OR, and do not wrap a phrase in parentheses: either one switches
+    reddit's search from its loose relevance match to strict boolean matching
+    where every word is required, and recall drops to nothing. Observed
+    2026-10-02 against a two-sub path, t=month, limit=100, all HTTP 200: a
+    bare five-word phrase returned 11 entries, while `(p1) OR (p2) OR (p3)`,
+    `(p1)` on its own, and `p1 OR p2 OR p3` each returned 0. The configured
+    phrases are written for the loose match, which no boolean query
+    reproduces, so phrases cannot share a request.
+
     The .json read this lane used through v0.4.0 is 403-walled as of 2026-08
     (a hard HTTP 403 for non-browser user agents; old.reddit.com answers the
     same query with a 302 to a login wall), while the .rss form returns 200
-    for this module's own descriptive UA. Same query, same `t` bucket, parsed
-    with the stdlib ElementTree like the Medium lane.
+    for this module's own descriptive UA. Same `t` bucket, parsed with the
+    stdlib ElementTree like the Medium lane.
+
+    The feed returns at most REDDIT_FEED_LIMIT entries. A response that full
+    may have been cut short at the cap, leaving the older end of the window
+    unread; that prints a NOTE on stderr rather than an error, because the
+    request did come back and the seen-store keeps what it returned out of the
+    next run. Scan more often, or tighten the phrase, if the NOTE keeps firing.
 
     What the transport costs: an Atom entry carries NO score and NO comment
     count, so every candidate here is emitted with score_or_stars=0 and
@@ -698,27 +791,49 @@ def reddit_adapter(cfg, since_dt, errors):
     t_param = _reddit_time_param(since_dt, datetime.now(timezone.utc))
     delay = max(REQUEST_DELAY, REDDIT_MIN_REQUEST_DELAY)
     groups = _lane_query_groups(cfg, "reddit")
-    subs = src.get("subs") or []
-    for sub in subs:
-        sub = str(sub).strip()
-        if not sub:
-            continue
-        for pattern, phrases in groups.items():
-            for phrase in phrases:
-                q = urllib.parse.quote(phrase)
-                url = (
-                    f"https://www.reddit.com/r/{urllib.parse.quote(sub)}/search.rss"
-                    f"?q={q}&restrict_sr=1&sort=new&t={t_param}"
+    subs = [str(sub).strip() for sub in src.get("subs") or []]
+    subs = [sub for sub in subs if sub]
+    if not subs:
+        return results
+    # Each name is quoted on its own and the `+` between them is left literal:
+    # it is the separator reddit reads, and quoting the joined string would
+    # turn it into %2B and ask for one sub with a plus sign in its name.
+    multi = "+".join(urllib.parse.quote(sub) for sub in subs)
+    label_subs = "+".join(subs)
+    for pattern, phrases in groups.items():
+        label = f"reddit r/{label_subs} {pattern}"
+        for phrase in phrases:
+            phrase = str(phrase).strip()
+            if not phrase:
+                continue
+            # The bare phrase, never parenthesised or OR-joined with its
+            # siblings: see the docstring for what that does to recall.
+            url = (
+                f"{_REDDIT_HOST}/r/{multi}/search.rss"
+                f"?q={urllib.parse.quote(phrase)}&restrict_sr=1&sort=new"
+                f"&t={t_param}&limit={REDDIT_FEED_LIMIT}"
+            )
+            root = http_get_xml(url, errors, label, delay=delay, host=_REDDIT_HOST)
+            if root is None:
+                continue
+            entries = root.findall(f"{_REDDIT_ATOM_NS}entry")
+            if len(entries) >= REDDIT_FEED_LIMIT:
+                # Same failure the `t` bucket comment above describes, from
+                # the other cap: a full page is indistinguishable from a
+                # truncated one, and a truncated one drops the oldest threads
+                # in the window without a word. Not an error -- the request
+                # came back -- so the lane's marker is not held on it.
+                print(
+                    f"NOTE {label}: {len(entries)} entries came back, the "
+                    f"feed's cap ({REDDIT_FEED_LIMIT}); older threads in this "
+                    "window may have been cut off. Scan more often or "
+                    "tighten the phrase.",
+                    file=sys.stderr,
                 )
-                root = http_get_xml(
-                    url, errors, f"reddit r/{sub} {pattern}", delay=delay
-                )
-                if root is None:
-                    continue
-                for entry in root.findall(f"{_REDDIT_ATOM_NS}entry"):
-                    cand = _reddit_entry_to_candidate(entry, sub, pattern, since_dt)
-                    if cand is not None:
-                        results.append(cand)
+            for entry in entries:
+                cand = _reddit_entry_to_candidate(entry, subs, pattern, since_dt)
+                if cand is not None:
+                    results.append(cand)
     return results
 
 
@@ -1255,6 +1370,23 @@ ADAPTERS = {
 # --- commands ----------------------------------------------------------------
 
 
+def _lane_not_configured(cfg, name):
+    """True if this profile never asked for the lane: its block is absent from
+    `sources` altogether, or the block says `enabled: false` in so many words.
+
+    `--source all` selects every adapter the module ships, so a profile that
+    configures two lanes still "runs" the other six. Those six make no request,
+    which is correct, and used to be reported as a fetch that did not happen --
+    a warning about lanes the operator never turned on. An opt-in block with
+    `enabled` merely left out is NOT covered: that is a lane someone started to
+    configure, and saying it made no request is the useful answer.
+    """
+    block = (cfg.get("sources") or {}).get(name)
+    if block is None:
+        return True
+    return isinstance(block, dict) and block.get("enabled") is False
+
+
 def cmd_scan(args):
     cfg = load_config(args.config)
     global REQUEST_DELAY
@@ -1276,6 +1408,7 @@ def cmd_scan(args):
     raw = []
     clean = {}
     reasons = {}
+    not_configured = set()
     for name in selected:
         adapter = ADAPTERS[name]
         report = LaneReport()
@@ -1291,6 +1424,12 @@ def cmd_scan(args):
         clean[name] = report.clean
         if not clean[name]:
             reasons[name] = hold_reason(report)
+            # Quiet only when nothing was tried AND nothing was asked for. A
+            # lane that recorded an error stays loud whatever its config says
+            # (discourse and lobsters do not read `enabled` at all, and a
+            # crashed adapter is news either way).
+            if not report and _lane_not_configured(cfg, name):
+                not_configured.add(name)
 
     seen = state.get("seen", {})
     posted = posted_urls(ledger_file)
@@ -1336,10 +1475,22 @@ def cmd_scan(args):
     # configured) does NOT — that stretch was never covered, and moving the
     # marker over it loses it silently and permanently. Being selected is a
     # request to scan, not evidence that the scan happened.
+    #
+    # Every one of those lanes is held. Not every one is worth a warning:
+    # `--source all` selects every adapter, and a lane this profile never
+    # configured (no block under `sources`, or `enabled: false` spelled out)
+    # made no request because none was wanted. Naming it under "no clean
+    # fetch" on every run buried the lanes that did fail in a list of lanes
+    # nobody asked for. So those stay held -- their marker does not move, and
+    # they are still listed in the digest's sources_held -- but are left out
+    # of both warnings below. A lane that is present and enabled yet made no
+    # request (no instances, no tags, no subs) still warns: that is a config
+    # that asked for a scan and got none.
     held = [name for name in selected if not clean[name]]
-    if held:
+    warned = [name for name in held if name not in not_configured]
+    if warned:
         grouped = {}
-        for name in held:
+        for name in warned:
             grouped.setdefault(reasons[name], []).append(name)
         detail = "; ".join(f"{r}: {', '.join(n)}" for r, n in grouped.items())
         print(
@@ -1356,7 +1507,7 @@ def cmd_scan(args):
     # lane, because clean means every request came back.) Name the age here, and
     # stamp the attempt below, so held and dead stop looking alike.
     stale_held = []
-    for name in held:
+    for name in warned:
         marker = parse_stamp(state.get("last_run_by_source", {}).get(name))
         if marker is not None and (now - marker).days >= HELD_WARN_DAYS:
             stale_held.append(f"{name} ({(now - marker).days}d)")

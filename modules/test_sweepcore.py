@@ -273,6 +273,30 @@ class GhTests(unittest.TestCase):
             self.assertIsNone(data)
             self.assertIn("some other failure", err)
 
+    def test_gh_rate_limit_with_401_in_its_ids_is_not_an_auth_failure(self):
+        # The digits 401 turn up in request IDs, user IDs and timestamps. A
+        # rate limit is the one gh error a caller can wait out, so it has to
+        # come back as an ordinary error, not end the run.
+        stderr = (
+            "HTTP 403: API rate limit exceeded for user ID 1401. If you reach "
+            "out to GitHub Support for help, please include the request ID "
+            "E401:30B63C:DFB37 and timestamp 2026-10-02 11:05:09 UTC."
+        )
+        with mock.patch.object(
+            sc.subprocess, "run", return_value=_proc(returncode=1, stderr=stderr)
+        ):
+            data, err = sc.gh(["x"])
+            self.assertIsNone(data)
+            self.assertIn("rate limit", err)
+
+    def test_is_auth_failure_matches_the_status_not_the_bare_digits(self):
+        self.assertTrue(sc.is_auth_failure("HTTP 401: Bad credentials"))
+        self.assertTrue(sc.is_auth_failure("gh: Requires authentication (HTTP 401)"))
+        self.assertTrue(sc.is_auth_failure("run gh auth login to continue"))
+        self.assertFalse(sc.is_auth_failure("HTTP 502: upstream, request ID A401:B2"))
+        self.assertFalse(sc.is_auth_failure(""))
+        self.assertFalse(sc.is_auth_failure(None))
+
     def test_gh_graphql_auth_failure_exits(self):
         with mock.patch.object(
             sc.subprocess,
@@ -345,6 +369,96 @@ class HttpGetTests(unittest.TestCase):
             status, body, err = sc.http_get("http://x")
             self.assertIsNone(status)
             self.assertTrue(err)
+
+    def test_429_waits_out_the_advertised_ratelimit_window(self):
+        # The whole-path version of the header rule below: a 429 that names
+        # the seconds left in its window must be retried AFTER the window, not
+        # 1s later inside it where the retry is guaranteed to fail again.
+        err429 = urllib.error.HTTPError(
+            "http://x", 429, "rl", {"x-ratelimit-reset": "59"}, None
+        )
+        seq = [err429, _FakeResp(200, "ok")]
+
+        def _side(*a, **k):
+            v = seq.pop(0)
+            if isinstance(v, Exception):
+                raise v
+            return v
+
+        with mock.patch.object(sc.urllib.request, "urlopen", side_effect=_side):
+            with mock.patch.object(sc.time, "sleep") as slept:
+                status, body, err = sc.http_get("http://x", retries=2)
+        self.assertEqual((status, body, err), (200, "ok", None))
+        slept.assert_called_once_with(60.0)
+
+
+class RetryAfterSecondsTests(unittest.TestCase):
+    """How long a 429/503 retry waits. Retry-After wins when it is usable; an
+    x-ratelimit-reset count of seconds is the fallback for venues that send no
+    Retry-After (observed 2026-10-02: a one-request-per-minute anonymous quota
+    answered only with `x-ratelimit-reset`, so 1s and 2s backoff retries both
+    landed inside the same window and failed); with neither, plain bounded
+    exponential backoff, exactly as before."""
+
+    @staticmethod
+    def _exc(headers):
+        return urllib.error.HTTPError("http://x", 429, "rl", headers, None)
+
+    def test_ratelimit_reset_is_honoured_with_the_margin(self):
+        wait = sc._retry_after_seconds(self._exc({"x-ratelimit-reset": "59"}), 0, 2.0)
+        self.assertEqual(wait, 59 + sc.RATELIMIT_RESET_MARGIN)
+        self.assertEqual(wait, 60.0)
+
+    def test_ratelimit_reset_is_capped(self):
+        wait = sc._retry_after_seconds(self._exc({"x-ratelimit-reset": "600"}), 0, 2.0)
+        self.assertEqual(wait, sc.RATELIMIT_RESET_CAP)
+        self.assertEqual(wait, 90.0)
+
+    def test_fractional_reset_is_read_as_seconds(self):
+        wait = sc._retry_after_seconds(self._exc({"x-ratelimit-reset": "12.5"}), 0, 2.0)
+        self.assertEqual(wait, 13.5)
+
+    def test_retry_after_is_preferred_over_ratelimit_reset(self):
+        headers = {"Retry-After": "7", "x-ratelimit-reset": "59"}
+        self.assertEqual(sc._retry_after_seconds(self._exc(headers), 0, 2.0), 7.0)
+
+    def test_retry_after_keeps_its_own_30s_cap(self):
+        headers = {"Retry-After": "120", "x-ratelimit-reset": "59"}
+        self.assertEqual(sc._retry_after_seconds(self._exc(headers), 0, 2.0), 30.0)
+
+    def test_unusable_retry_after_falls_through_to_ratelimit_reset(self):
+        # Retry-After may also be an HTTP date, which this helper does not
+        # parse. The reset header is still a usable answer.
+        headers = {
+            "Retry-After": "Fri, 02 Oct 2026 10:00:00 GMT",
+            "x-ratelimit-reset": "20",
+        }
+        self.assertEqual(sc._retry_after_seconds(self._exc(headers), 0, 2.0), 21.0)
+
+    def test_neither_header_is_plain_exponential_backoff(self):
+        for attempt, expected in ((0, 1.0), (1, 2.0), (2, 4.0), (10, 30.0)):
+            self.assertEqual(
+                sc._retry_after_seconds(self._exc({}), attempt, 2.0), expected
+            )
+
+    def test_missing_headers_object_is_plain_exponential_backoff(self):
+        self.assertEqual(sc._retry_after_seconds(self._exc(None), 1, 2.0), 2.0)
+
+    def test_unparseable_or_negative_reset_falls_back_to_backoff(self):
+        for value in ("soon", "-5", "nan"):
+            self.assertEqual(
+                sc._retry_after_seconds(
+                    self._exc({"x-ratelimit-reset": value}), 1, 2.0
+                ),
+                2.0,
+                value,
+            )
+
+    def test_epoch_style_reset_is_not_read_as_a_delta(self):
+        # Some APIs put a Unix timestamp in the same header. Treating that as
+        # seconds-remaining would cost the full cap on every such response.
+        headers = {"x-ratelimit-reset": "1790935200"}
+        self.assertEqual(sc._retry_after_seconds(self._exc(headers), 0, 2.0), 1.0)
 
 
 class DensityRobustnessTests(unittest.TestCase):

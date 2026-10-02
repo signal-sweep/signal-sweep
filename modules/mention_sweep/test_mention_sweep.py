@@ -21,6 +21,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import mention_sweep as ms  # noqa: E402
 
+# The code lane paces itself between searches (CODE_SEARCH_MIN_INTERVAL) and
+# waits a full minute before a rate-limit retry, so any test that reaches
+# code_lane with two or more match strings would otherwise spend real seconds.
+# Patched for the whole module: an offline suite never really sleeps. The
+# pacing tests below inject their own sleep and clock and assert on those.
+_NO_REAL_SLEEP = mock.patch.object(ms.time, "sleep")
+
+
+def setUpModule():
+    _NO_REAL_SLEEP.start()
+
+
+def tearDownModule():
+    _NO_REAL_SLEEP.stop()
+
 
 def _proc(stdout="", returncode=0, stderr=""):
     return subprocess.CompletedProcess(
@@ -179,6 +194,194 @@ class QueryConstructionTests(unittest.TestCase):
         self.assertEqual(len(fake.code_cmds), 2)
         self.assertEqual(len(out), 2)
         self.assertEqual(out[0]["lane"], "code")
+
+
+RATE_LIMITED = "HTTP 403: API rate limit exceeded for user ID 12345."
+
+
+class CodeLanePacingTests(unittest.TestCase):
+    """GitHub code search allows 10 requests a minute. The lane spends one per
+    match string, so an unpaced run with more than ten terms had every term
+    past the tenth answered `HTTP 403: API rate limit exceeded`, on every run
+    (observed 2026-10-02): those terms were never code-searched. The lane now
+    spaces its searches and retries a rate-limited one once, after a minute."""
+
+    def setUp(self):
+        # A fake clock that the recorded sleeps advance, so a wait and the
+        # time it buys are both visible and no real second is spent.
+        self.now = 500.0
+        self.sleeps = []
+
+    def _sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def _clock(self):
+        return self.now
+
+    def _cfg(self, *terms):
+        return {"match_strings": list(terms), "per_query": 10, "scan_code_lane": True}
+
+    def _run(self, cfg, search):
+        """Run the lane against a fake gh_search_code; returns (results,
+        errors, the (term, start-time) of every search issued)."""
+        calls = []
+
+        def fake_search(term, limit):
+            calls.append((term, self.now))
+            return search(term, len(calls))
+
+        errors = []
+        with mock.patch.object(ms, "gh_search_code", side_effect=fake_search):
+            results = ms.code_lane(cfg, errors, sleep=self._sleep, clock=self._clock)
+        return results, errors, calls
+
+    @staticmethod
+    def _ok(term, n):
+        return [_code_hit(f"https://x/{term}", "README.md")], None
+
+    def test_searches_are_spaced_and_the_first_is_not_delayed(self):
+        _results, errors, calls = self._run(self._cfg("a", "b", "c"), self._ok)
+        self.assertEqual(errors, [])
+        # Two gaps for three terms: nothing is slept before the first search.
+        self.assertEqual(self.sleeps, [ms.CODE_SEARCH_MIN_INTERVAL] * 2)
+        self.assertEqual(calls[0], ("a", 500.0))
+        starts = [at for _term, at in calls]
+        for earlier, later in zip(starts, starts[1:], strict=False):
+            self.assertGreaterEqual(later - earlier, ms.CODE_SEARCH_MIN_INTERVAL)
+
+    def test_a_single_term_never_sleeps(self):
+        self._run(self._cfg("only"), self._ok)
+        self.assertEqual(self.sleeps, [])
+
+    def test_only_the_time_still_owed_is_slept(self):
+        # A search that itself took 4s has already paid 4s of the interval.
+        def slow(term, n):
+            self.now += 4.0
+            return [], None
+
+        self._run(self._cfg("a", "b"), slow)
+        self.assertEqual(self.sleeps, [ms.CODE_SEARCH_MIN_INTERVAL - 4.0])
+
+    def test_a_search_slower_than_the_interval_owes_nothing(self):
+        def very_slow(term, n):
+            self.now += 10.0
+            return [], None
+
+        self._run(self._cfg("a", "b"), very_slow)
+        self.assertEqual(self.sleeps, [])
+
+    def test_sixteen_terms_stay_inside_ten_searches_a_minute(self):
+        # The reported shape. Check the timestamps the lane actually produces,
+        # not just the constant: no trailing 60s stretch may hold more than 10.
+        terms = [f"term{i}" for i in range(16)]
+        _results, errors, calls = self._run(self._cfg(*terms), self._ok)
+        self.assertEqual(errors, [])
+        self.assertEqual([term for term, _at in calls], terms)
+        starts = [at for _term, at in calls]
+        for at in starts:
+            window = [x for x in starts if at - 60 < x <= at]
+            self.assertLessEqual(len(window), 10)
+
+    def test_rate_limit_then_success_yields_results_and_no_error(self):
+        def flaky(term, n):
+            if n == 1:
+                return [], RATE_LIMITED
+            return [_code_hit("https://x/1", "README.md")], None
+
+        results, errors, calls = self._run(self._cfg("a"), flaky)
+        self.assertEqual(errors, [])
+        self.assertEqual([c["url"] for c in results], ["https://x/1"])
+        self.assertEqual([term for term, _at in calls], ["a", "a"])
+        self.assertEqual(self.sleeps, [ms.CODE_SEARCH_RATE_LIMIT_WAIT])
+        self.assertEqual(ms.CODE_SEARCH_RATE_LIMIT_WAIT, 60.0)
+
+    def test_rate_limit_match_is_case_insensitive(self):
+        def flaky(term, n):
+            if n == 1:
+                return [], "You have exceeded a secondary Rate Limit."
+            return [], None
+
+        _results, errors, calls = self._run(self._cfg("a"), flaky)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(calls), 2)
+
+    def test_two_rate_limit_failures_record_one_error_after_one_retry(self):
+        results, errors, calls = self._run(
+            self._cfg("a"), lambda term, n: ([], RATE_LIMITED)
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(errors, [f"code/a: {RATE_LIMITED}"])
+        # The original search plus exactly one retry, never a third.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.sleeps, [ms.CODE_SEARCH_RATE_LIMIT_WAIT])
+
+    def test_a_still_limited_term_does_not_stop_the_next(self):
+        def limited_a(term, n):
+            if term == "a":
+                return [], RATE_LIMITED
+            return [_code_hit("https://x/b", "README.md")], None
+
+        results, errors, calls = self._run(self._cfg("a", "b"), limited_a)
+        self.assertEqual([term for term, _at in calls], ["a", "a", "b"])
+        self.assertEqual(len(errors), 1)
+        self.assertEqual([c["url"] for c in results], ["https://x/b"])
+        # The next term is still spaced from the retry's start.
+        self.assertGreaterEqual(calls[2][1] - calls[1][1], ms.CODE_SEARCH_MIN_INTERVAL)
+
+    def test_other_errors_are_not_retried(self):
+        results, errors, calls = self._run(
+            self._cfg("a"), lambda term, n: ([], "HTTP 422: query could not be parsed")
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(errors, ["code/a: HTTP 422: query could not be parsed"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_disabled_lane_neither_searches_nor_sleeps(self):
+        cfg = self._cfg("a", "b")
+        cfg["scan_code_lane"] = False
+        _results, _errors, calls = self._run(cfg, self._ok)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.sleeps, [])
+
+    def test_auth_failure_still_exits(self):
+        # gh_search_code owns this: an unauthenticated sweep is a
+        # misconfiguration, not a per-term failure to pace or retry around.
+        proc = _proc(returncode=1, stderr="HTTP 401: Bad credentials")
+        with mock.patch.object(ms.subprocess, "run", return_value=proc):
+            with self.assertRaises(SystemExit):
+                ms.code_lane(self._cfg("a"), [], sleep=self._sleep, clock=self._clock)
+        self.assertEqual(self.sleeps, [])
+
+    def test_rate_limit_with_401_in_its_ids_is_retried_not_fatal(self):
+        # A request ID or user ID can hold the digits 401. That must not be
+        # read as an auth failure: the term gets its one retry and, failing
+        # that, an ordinary error entry.
+        stderr = (
+            "HTTP 403: API rate limit exceeded for user ID 1401. If you reach "
+            "out to GitHub Support for help, please include the request ID "
+            "E401:30B63C:DFB37 and timestamp 2026-10-02 11:05:09 UTC."
+        )
+        proc = _proc(returncode=1, stderr=stderr)
+        errors = []
+        with mock.patch.object(ms.subprocess, "run", return_value=proc) as run:
+            ms.code_lane(self._cfg("a"), errors, sleep=self._sleep, clock=self._clock)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn(ms.CODE_SEARCH_RATE_LIMIT_WAIT, self.sleeps)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("rate limit", errors[0])
+
+    def test_defaults_resolve_to_the_time_module_at_call_time(self):
+        # No injected sleep: the lane must reach time.sleep through the module
+        # attribute, so a monkeypatched time.sleep is what it calls.
+        with mock.patch.object(ms.time, "sleep") as slept:
+            with mock.patch.object(
+                ms, "gh_search_code", side_effect=lambda term, limit: ([], None)
+            ):
+                ms.code_lane(self._cfg("a", "b"), [])
+        self.assertEqual(slept.call_count, 1)
+        self.assertLessEqual(slept.call_args.args[0], ms.CODE_SEARCH_MIN_INTERVAL)
 
 
 class DryRunTests(unittest.TestCase):

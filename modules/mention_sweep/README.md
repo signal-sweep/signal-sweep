@@ -14,6 +14,8 @@ Why that distinction earns its own module: a passive mention is a different kind
 
 **Lane 2 (code).** Each match string runs through `gh search code`, which finds your name or URL inside files: awesome-list entries, README references, dependency manifests, config snippets. GitHub's code search has no date filter, so the seen-store is the freshness backstop for this lane rather than a time window.
 
+Code search has its own limit of 10 requests a minute, and this lane spends one request per match string. So the lane paces itself: consecutive searches start at least 6.5 seconds apart, and a search that comes back rate-limited anyway waits 60 seconds and is retried once. Expect a real scan to take about 6.5 seconds per match string. Sixteen match strings is a little over a minute and a half, where an unpaced run finished in seconds and silently skipped every term past the tenth. A term still rate-limited after its retry is reported in the digest's `errors`.
+
 Filters before anything reaches you: your own repos excluded (set them in `own_repos`), an optional star floor on the thread lane (`min_stars`, default 0 so nothing is dropped by accident), a per-repo cap so one busy repo can't flood the digest, everything previously surfaced excluded (seen-store), everything previously engaged excluded forever (ledger).
 
 Each hit gets a heuristic class to triage faster:
@@ -84,7 +86,7 @@ The example config is a real one: the match strings and own-repo exclusions for 
 
 `last_run` is a claim about coverage: everything published after it has been looked at. A scan earns a new one only by proving it covered the window — at least one thread search came back and none failed.
 
-Only lane 1 is time-scoped, so only lane 1 earns or holds the marker. Code search has no date filter, so a code-lane failure loses no stretch of time; it is reported in the digest but never freezes the window, which matters because `gh search code` is the lane most likely to stay rate-limited for a while.
+Only lane 1 is time-scoped, so only lane 1 earns or holds the marker. Code search has no date filter, so a code-lane failure loses no stretch of time; it is reported in the digest but never freezes the window. That matters because `gh search code` has the tightest limit of anything this module calls, and a term can still be rate-limited after its one retry when something else is spending the same token's budget.
 
 A search that came back holding nothing is a real, covered, empty window, and it advances. Everything else keeps the old stamp: a search that errored, or a lane that never issued a search at all. Partial failure counts as failure — if one match string answers while the next errors, the run holds, and the seen-store keeps the already-surfaced mentions out of the re-scan. A run with no stored marker that fails writes no marker either, rather than inventing one.
 
