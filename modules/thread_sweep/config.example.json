@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to config.json and edit. This example is a real working config: the agent-workspace-architecture project's actual topic groups, published as the worked example.",
+  "_comment": "Copy to config.json and edit. This example is a snapshot, as of 2026-10-03, of the topic groups the agent-workspace-architecture project sweeps with, published as the worked example.",
   "own_login": "jimy-r",
   "own_repo": "jimy-r/agent-workspace-architecture",
   "min_stars": 300,
@@ -20,7 +20,7 @@
   ],
   "queries": {
     "roles-architecture": {
-      "answers_with": "PATTERNS.md #1 — pure roles composed with project facts",
+      "answers_with": "PATTERNS.md — pure roles composed with project facts",
       "phrases": [
         "claude code subagents organize roles",
         "agent persona library reusable",
@@ -28,7 +28,7 @@
       ]
     },
     "review-queue": {
-      "answers_with": "PATTERNS.md #2 — classify-then-act, sandboxed builds, review queue",
+      "answers_with": "PATTERNS.md — classify-then-act, sandboxed builds, review queue",
       "phrases": [
         "autonomous agent changes without approval",
         "agent sandbox review queue unattended",
@@ -36,7 +36,7 @@
       ]
     },
     "dead-mans-switch": {
-      "answers_with": "PATTERNS.md #3 — dead-man's switch over scheduled jobs",
+      "answers_with": "PATTERNS.md — dead-man's switch over scheduled jobs",
       "phrases": [
         "scheduled agent failed silently",
         "cron claude stopped running no error",
@@ -44,14 +44,14 @@
       ]
     },
     "impact-tiering": {
-      "answers_with": "PATTERNS.md #4 — tier by mechanical impact, not by tone",
+      "answers_with": "PATTERNS.md — tier by mechanical impact, not by tone",
       "phrases": [
         "agent permission system design approve",
         "auto-approve commands agent safety tiers"
       ]
     },
     "memory-hygiene": {
-      "answers_with": "PATTERNS.md #5 — memory hygiene (dedup, verify, index ceiling)",
+      "answers_with": "PATTERNS.md — memory hygiene (dedup, verify, index ceiling)",
       "phrases": [
         "agent memory bloat stale facts",
         "\"claude code\" memory drift wrong",
@@ -59,7 +59,7 @@
       ]
     },
     "credential-discipline": {
-      "answers_with": "PATTERNS.md #6 — credentials in one place, never in files",
+      "answers_with": "PATTERNS.md — credentials in one place, never in files",
       "phrases": [
         "agent api keys env files leaked",
         "\"claude code\" credentials secrets manage",
@@ -67,7 +67,7 @@
       ]
     },
     "hooks-guards": {
-      "answers_with": "PATTERNS.md #7 — cheap hooks beat careful agents",
+      "answers_with": "PATTERNS.md — cheap hooks beat careful agents",
       "phrases": [
         "\"claude code\" deleted my files",
         "block destructive commands agent hook",
@@ -75,7 +75,7 @@
       ]
     },
     "workspace-audit": {
-      "answers_with": "PATTERNS.md #8 — audit the workspace like a fitness function",
+      "answers_with": "PATTERNS.md — audit the workspace like a fitness function",
       "phrases": [
         "agent workspace config drift audit",
         "CLAUDE.md stale maintenance review",
@@ -83,7 +83,7 @@
       ]
     },
     "context-budget": {
-      "answers_with": "PATTERNS.md #9 — context is a budget, not a constant",
+      "answers_with": "PATTERNS.md — context is a budget, not a constant",
       "phrases": [
         "\"claude code\" context bloat",
         "CLAUDE.md too large tokens",
@@ -92,6 +92,135 @@
         "agent context window full compaction",
         "\"claude code\" token usage too high",
         "subagent context isolation cost"
+      ]
+    },
+    "skill-self-edit-gate": {
+      "answers_with": "PATTERNS.md #10 — a skill is editable weights; gate every self-edit",
+      "phrases": [
+        "agent rewrites its own instructions",
+        "\"CLAUDE.md\" self improvement loop",
+        "self-modifying agent safeguards",
+        "agent edit own skill file"
+      ]
+    },
+    "scaffold-hypothesis": {
+      "answers_with": "PATTERNS.md #11 — a scaffold is a hypothesis; measure or cut",
+      "phrases": [
+        "system prompt bloat",
+        "\"CLAUDE.md\" too many rules ignored",
+        "measure prompt scaffold effectiveness",
+        "prompt changes regression eval"
+      ]
+    },
+    "loop-selection": {
+      "answers_with": "PATTERNS.md #12 — loop selection: not everything should be a loop",
+      "phrases": [
+        "which tasks automate ai agent",
+        "\"claude code\" unattended automation",
+        "agent autonomy irreversible actions",
+        "cron agent vs manual approval"
+      ]
+    },
+    "ideation-challenge": {
+      "answers_with": "PATTERNS.md #13 — divergent-lens challenge with a held-out sample",
+      "phrases": [
+        "claude agrees with everything",
+        "llm sycophancy design decisions",
+        "ai push back on ideas",
+        "devils advocate agent brainstorming"
+      ]
+    },
+    "delegation-queue": {
+      "answers_with": "PATTERNS.md #14 — delegation is a queue you fill, not work the agent finds",
+      "phrases": [
+        "background agent delegate tasks queue",
+        "agent clarifying questions unanswered",
+        "autonomous agent guesses intent task list",
+        "\"project manager\" agent finds its own work",
+        "delegate work to ai agent approval intake"
+      ]
+    },
+    "lane-pricing": {
+      "answers_with": "PATTERNS.md #15 — price the lane before you migrate it",
+      "phrases": [
+        "\"claude code\" route subagents cheaper model",
+        "offload agent execution local llm cost",
+        "token usage keeps growing hitting limits agents",
+        "migrate agents open weight models cost"
+      ]
+    },
+    "claim-provenance": {
+      "answers_with": "PATTERNS.md #16 — a claim carries its provenance, or it is a guess",
+      "phrases": [
+        "\"claude code\" hallucinated file path",
+        "agent confidently wrong codebase state",
+        "make agent cite file line verify",
+        "llm asserts file exists doesn't",
+        "agent hallucinated config value",
+        "llm cites nonexistent file line",
+        "trust agent claims about codebase",
+        "verified vs unverified llm output",
+        "agent states guess as fact"
+      ]
+    },
+    "canonical-copy": {
+      "answers_with": "PATTERNS.md #17 — one canonical copy, and pointers from everywhere else",
+      "phrases": [
+        "\"single source of truth\" docs drift agent",
+        "duplicated instructions out of sync CLAUDE.md",
+        "two copies config drift which one",
+        "claude.md duplicated rules drift",
+        "agent instructions conflict between files",
+        "single source of truth agent docs",
+        "same rule two files out of sync"
+      ]
+    },
+    "teardown-lifeos": {
+      "answers_with": "teardowns/2026-08-28-lifeos.md — LifeOS teardown (distribution, doctor states, measurement gap)",
+      "phrases": [
+        "LifeOS worth installing evaluation",
+        "personal AI operating system scaffolding worse",
+        "\"life os\" harness install safe"
+      ]
+    },
+    "teardown-herdr": {
+      "answers_with": "teardowns/2026-08-28-herdr.md — herdr teardown (runtime accountability gap)",
+      "phrases": [
+        "agent terminal multiplexer compare",
+        "running agents unattended overnight cost",
+        "herdr worth it coding agents"
+      ]
+    },
+    "teardown-12-factor-agents": {
+      "answers_with": "teardowns/2026-08-27-12-factor-agents.md — 12-Factor Agents teardown (what the factors leave out: sentinels, memory, hooks, provenance)",
+      "phrases": [
+        "\"12-factor agents\" critique missing",
+        "12 factor agents what is missing",
+        "humanlayer 12-factor agents evaluation"
+      ]
+    },
+    "teardown-deepseek-harness": {
+      "answers_with": "teardowns/2026-09-05-deepseek-harness.md — DeepSeek Harness teardown (no first-party memory by decision, one-home-per-fact, guards must fail)",
+      "phrases": [
+        "\"deepseek harness\" memory across sessions",
+        "dsh persistent memory plugin agent",
+        "deepseek-harness worth using compare"
+      ]
+    },
+    "teardown-azure-gpt-rag": {
+      "answers_with": "teardowns/2026-09-06-azure-gpt-rag.md — GPT-RAG teardown (tests no workflow runs, release-pinning test stale against its manifest, ADR review triggers, fifteen divergent skill copies)",
+      "phrases": [
+        "\"gpt-rag\" agents.md copilot skills",
+        "azure gpt-rag hosted agent foundry continuity",
+        "adr review trigger fitness function agent repo"
+      ]
+    },
+    "teardown-openharness": {
+      "answers_with": "teardowns/2026-10-02-openharness.md — OpenHarness teardown (validation receipts bound to a content fingerprint, handoffs that list what is unproven, PR checks replaced by a local receipt, no budget on instruction files)",
+      "phrases": [
+        "\"openharness\" coding agents command centre",
+        "agent handoff file what is not proven",
+        "validation receipt instead of pull request ci agent"
       ]
     },
     "fabrication-guard": {
@@ -103,58 +232,105 @@
       ]
     },
     "redaction-publishing": {
-      "answers_with": "repo — redaction CI gate + denylist pre-commit",
+      "answers_with": "repo — redaction CI gate + denylist pre-commit (redaction_check.py)",
       "phrases": [
         "publish private repo scrub secrets history",
         "open source repo PII redact before",
         "pre-commit hook prevent leaking identifiers"
       ]
     },
-    "skill-as-weights": {
-      "answers_with": "PATTERNS.md #10 — a skill is editable weights; gate a self-edit before adopting",
-      "phrases": [
-        "agent rewrites its own instructions safely",
-        "self improving claude.md prompt risk",
-        "let agent edit its own system prompt gate"
-      ]
-    },
-    "scaffold-hypothesis": {
-      "answers_with": "PATTERNS.md #11 — a scaffold is a hypothesis; gate it behind a measurable signal",
-      "phrases": [
-        "does adding an agent skill actually improve results",
-        "measure whether a prompt change helped eval",
-        "agent self critique pass adds nothing"
-      ]
-    },
-    "loop-selection": {
-      "answers_with": "PATTERNS.md #12 — loop selection: not everything should be a loop",
-      "phrases": [
-        "should I automate this agent task or not",
-        "when to let an agent run autonomously",
-        "which agent tasks should be a loop"
-      ]
-    },
-    "divergent-lens": {
-      "answers_with": "PATTERNS.md #13 — one divergent lens on unfinished thinking, with a held-out sample to measure it",
-      "phrases": [
-        "multi agent debate does it improve the answer",
-        "agent self critique makes the output worse",
-        "how to measure whether a critic agent helps"
-      ]
-    },
-    "delegation-queue": {
-      "answers_with": "PATTERNS.md #14 — delegation is a queue you fill, not work the agent finds",
-      "phrases": [
-        "background agent questions nobody answers",
-        "autonomous project manager agent picks the wrong work",
-        "how to hand a task to a background agent claude"
-      ]
-    },
     "mentions": {
-      "answers_with": "respond or correct where the project is being discussed (note: min_stars floor applies to this group too)",
+      "answers_with": "respond/correct where the flagship or signal-sweep is discussed",
       "phrases": [
         "\"agent-workspace-architecture\"",
         "\"signal-sweep\""
+      ]
+    },
+    "thread-sweep-module": {
+      "answers_with": "signal-sweep thread_sweep — find GitHub threads your docs already answer",
+      "phrases": [
+        "\"promote my project\" \"open source\"",
+        "\"without spamming\" \"open source\""
+      ]
+    },
+    "forum-sweep-module": {
+      "answers_with": "signal-sweep forum_sweep — answer-the-question venues beyond GitHub",
+      "phrases": [
+        "\"where to share\" \"my project\" developers",
+        "\"first users\" \"developer tool\""
+      ]
+    },
+    "mention-sweep-module": {
+      "answers_with": "signal-sweep mention_sweep — entity-first: where your project is named",
+      "phrases": [
+        "\"track mentions\" \"my project\"",
+        "\"when someone mentions\" repo"
+      ]
+    },
+    "list-sweep-module": {
+      "answers_with": "signal-sweep list_sweep — discover curated lists + their intake mechanics",
+      "phrases": [
+        "\"awesome list\" \"how do I get\"",
+        "\"submitting to awesome\" list"
+      ]
+    },
+    "placement-health-module": {
+      "answers_with": "signal-sweep placement_health — watch listings; find out when one drops you",
+      "phrases": [
+        "\"removed from\" \"awesome list\"",
+        "\"link rot\" repository links"
+      ]
+    },
+    "release-sweep-module": {
+      "answers_with": "signal-sweep release_sweep — per-channel announcement material from a release",
+      "phrases": [
+        "\"how do I announce\" release",
+        "\"release notes\" tedious repetitive"
+      ]
+    },
+    "benchmark-sweep-module": {
+      "answers_with": "signal-sweep — benchmark_sweep module",
+      "phrases": [
+        "is there a benchmark for agent memory",
+        "no standard eval agent workspace",
+        "how to measure agent context management benchmark"
+      ]
+    },
+    "position-is-price": {
+      "answers_with": "PATTERNS.md #18 — position is price: a token costs more the earlier you add it",
+      "phrases": [
+        "conversation history resent every request cost",
+        "agent rereads context every turn tokens",
+        "\"prompt caching\" why still expensive",
+        "large read start of session token cost"
+      ]
+    },
+    "cfp-sweep-module": {
+      "answers_with": "signal-sweep cfp_sweep — CFP/meetup discovery matched to your topics",
+      "phrases": [
+        "\"call for proposals\" \"keep track\"",
+        "\"find conferences\" \"to speak at\""
+      ]
+    },
+    "newsletter-sweep-module": {
+      "answers_with": "signal-sweep newsletter_sweep — newsletter/digest submission targets",
+      "phrases": [
+        "\"get featured\" \"newsletter\"",
+        "\"submit my project\" newsletter"
+      ]
+    },
+    "response-sweep-module": {
+      "answers_with": "signal-sweep response_sweep — go back and read what came of your comments",
+      "phrases": [
+        "\"replies to\" \"comments I posted\"",
+        "\"forgot to follow up\" github"
+      ]
+    },
+    "teardown-sweep-module": {
+      "answers_with": "signal-sweep teardown_sweep — find published architectures worth a teardown",
+      "phrases": [
+        "\"architecture teardown\" agent",
+        "\"worth a\" \"deep dive\" repo agent"
       ]
     }
   }

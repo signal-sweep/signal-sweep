@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to placements.json and edit. This example is real: the flagship project's actual placements as of 2026-08-27, plus the awesome-agent-workspaces list (14 entries). 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
+  "_comment": "Copy to placements.json and edit. This example is a snapshot of a real registry as of 2026-10-03: the maintainers' own repos and their list submissions (20 entries). 'expect' is a string that must be present if you're still listed; for a GitHub list, point 'url' at the raw README. Mark 'status':'pending' for submissions not yet merged — a pending entry that 404s or lacks the string is not a finding; once the string appears, the checker flags it PENDING_MERGED so you promote it.",
   "placements": [
     {
       "name": "Flagship - GitHub Pages tour (own property)",
@@ -58,6 +58,34 @@
       "status": "live"
     },
     {
+      "name": "nibzard/awesome-agentic-patterns (PR #150, tier-auto-apply)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/patterns/tier-auto-apply-by-mechanical-impact.md",
+      "expect": "James Ross",
+      "kind": "list",
+      "status": "live"
+    },
+    {
+      "name": "ai-boost/awesome-harness-engineering (PR #247, awesome-agent-workspaces)",
+      "url": "https://raw.githubusercontent.com/ai-boost/awesome-harness-engineering/main/README.md",
+      "expect": "awesome-agent-workspaces",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "wmariuss/awesome-devops (PR #544, dead-mans-switch)",
+      "url": "https://raw.githubusercontent.com/wmariuss/awesome-devops/main/README.md",
+      "expect": "dead-mans-switch",
+      "kind": "list",
+      "status": "pending"
+    },
+    {
+      "name": "nibzard/awesome-agentic-patterns (PR #148, classify-then-act)",
+      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/patterns/classify-then-act-for-background-agents.md",
+      "expect": "James Ross",
+      "kind": "list",
+      "status": "live"
+    },
+    {
       "name": "nibzard/awesome-agentic-patterns (PR #99, context-budget)",
       "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/patterns/context-budget-as-a-governed-resource.md",
       "expect": "James Ross",
@@ -65,39 +93,53 @@
       "status": "live"
     },
     {
-      "name": "Awesome-list - repo README (own property)",
-      "url": "https://raw.githubusercontent.com/jimy-r/awesome-agent-workspaces/main/README.md",
-      "expect": "awesome-agent-workspaces",
-      "kind": "page",
+      "name": "adriannovegil/awesome-observability (PR #134, dead-mans-switch)",
+      "url": "https://raw.githubusercontent.com/adriannovegil/awesome-observability/master/README.md",
+      "expect": "dead-mans-switch",
+      "kind": "list",
       "status": "live"
     },
     {
-      "name": "Awesome-list -> sindresorhus/awesome (awesome index; eligible after 30-day age + awesome-lint clean)",
-      "url": "https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md",
+      "name": "jnv/lists (PR #327, awesome-agent-workspaces)",
+      "url": "https://raw.githubusercontent.com/jnv/lists/master/README.md",
       "expect": "awesome-agent-workspaces",
       "kind": "list",
       "status": "pending"
     },
     {
-      "name": "Awesome-list -> hesreallyhim/awesome-claude-code (related list)",
-      "url": "https://raw.githubusercontent.com/hesreallyhim/awesome-claude-code/main/README.md",
-      "expect": "awesome-agent-workspaces",
+      "name": "dmitryvinn/awesome-dev-advocacy (PR #19, signal-sweep)",
+      "url": "https://raw.githubusercontent.com/dmitryvinn/awesome-dev-advocacy/main/README.md",
+      "expect": "signal-sweep/signal-sweep",
       "kind": "list",
       "status": "pending"
     },
     {
-      "name": "Awesome-list -> nibzard/awesome-agentic-patterns (related list)",
-      "url": "https://raw.githubusercontent.com/nibzard/awesome-agentic-patterns/main/README.md",
-      "expect": "awesome-agent-workspaces",
-      "kind": "list",
-      "status": "pending"
+      "name": "awesome-agent-workspaces - repo README (own property)",
+      "kind": "page",
+      "url": "https://raw.githubusercontent.com/jimy-r/awesome-agent-workspaces/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "status": "live"
     },
     {
-      "name": "Awesome-list -> Meirtz/Awesome-Context-Engineering (related list)",
-      "url": "https://raw.githubusercontent.com/Meirtz/Awesome-Context-Engineering/main/README.md",
-      "expect": "awesome-agent-workspaces",
-      "kind": "list",
-      "status": "pending"
+      "name": "agent-workspace-starter - repo README (own property)",
+      "kind": "page",
+      "url": "https://raw.githubusercontent.com/jimy-r/agent-workspace-starter/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "status": "live"
+    },
+    {
+      "name": "dead-mans-switch - repo README (own property)",
+      "kind": "page",
+      "url": "https://raw.githubusercontent.com/jimy-r/dead-mans-switch/main/README.md",
+      "expect": "PATTERNS.md",
+      "status": "live"
+    },
+    {
+      "name": "redaction-check-action - repo README (own property)",
+      "kind": "page",
+      "url": "https://raw.githubusercontent.com/jimy-r/redaction-check-action/main/README.md",
+      "expect": "agent-workspace-architecture",
+      "status": "live"
     }
   ]
 }

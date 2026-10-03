@@ -26,7 +26,7 @@ One adapter per source, all returning the same candidate schema (`url`, `title`,
 "discourse": { "instances": ["forum.cursor.com", "community.openai.com", "discuss.huggingface.co"] }
 ```
 
-Anonymous Discourse search is rate-limited per instance, and an unpaced sweep 429s across every instance at once, which holds the primary lane's window run after run. So the lane keeps a floor of 1 second **per host** whatever `request_delay_seconds` says. Per host rather than module-wide because the limit is per instance: the time spent reading `community.openai.com` is time `forum.cursor.com` has already waited, so a rotating sweep pays the floor once, not once per instance.
+Anonymous Discourse search is rate-limited per instance, and an unpaced sweep 429s across every instance at once, which holds the primary lane's window run after run. Discourse's default allows 15 anonymous searches a minute, so the lane keeps a floor of 4.1 seconds **per host** whatever `request_delay_seconds` says. The floor is per host rather than module-wide because the limit is per instance. The lane runs each phrase across every instance before it moves to the next phrase, so the time spent reading `community.openai.com` is time `forum.cursor.com` has already waited. With several instances configured the floor adds little or no sleep. A single-instance config pays close to the full 4.1 seconds on every request.
 
 **Hacker News.** The free Algolia API (`search_by_date`), one query per phrase over stories and comments, windowed by `created_at_i`. Hits below `thresholds.hn_min_points` are dropped. Maps to `news.ycombinator.com/item?id=`.
 
