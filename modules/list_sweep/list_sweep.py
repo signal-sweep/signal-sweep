@@ -41,6 +41,7 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
@@ -322,19 +323,22 @@ def load_placements(path, errors):
     return listed
 
 
+GITHUB_HOSTS = {"github.com", "www.github.com", "raw.githubusercontent.com"}
+
+
 def repo_from_url(url):
-    """Pull an owner/name from a github.com or raw.githubusercontent.com URL."""
+    """Pull an owner/name from a github.com or raw.githubusercontent.com URL.
+
+    The host is compared after parsing, so a URL that only mentions github.com
+    in its path or query (https://evil.example/github.com/a/b) is not taken
+    for a GitHub one.
+    """
     if not url:
         return None
-    marker = None
-    if "raw.githubusercontent.com/" in url:
-        marker = "raw.githubusercontent.com/"
-    elif "github.com/" in url:
-        marker = "github.com/"
-    if not marker:
+    parsed = urlsplit(url if "://" in url else "https://" + url)
+    if (parsed.hostname or "") not in GITHUB_HOSTS:
         return None
-    tail = url.split(marker, 1)[1].strip("/")
-    parts = tail.split("/")
+    parts = parsed.path.strip("/").split("/")
     if len(parts) >= 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
     return None

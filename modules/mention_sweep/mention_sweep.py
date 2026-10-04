@@ -212,13 +212,13 @@ def is_own_repo(repo, own_repos):
 def match_kind(term):
     """Confidence of a match string: 'url' (high) vs 'name' (low).
 
-    A URL or owner/name path (a slash or github.com) only matches a real
-    reference to the project. A bare project name is a plausible generic phrase
-    that matches coincidentally — a live run confirmed bare-name hits are mostly
-    noise. The human triages 'url' hits first; 'name'-only hits are low-trust
-    until read."""
+    A URL or owner/name path (anything with a slash, which covers every
+    github.com/ form) only matches a real reference to the project. A bare
+    project name is a plausible generic phrase that matches coincidentally — a
+    live run confirmed bare-name hits are mostly noise. The human triages 'url'
+    hits first; 'name'-only hits are low-trust until read."""
     t = (term or "").lower()
-    if "://" in t or "github.com/" in t or "/" in t:
+    if "/" in t:
         return "url"
     return "name"
 

@@ -51,7 +51,7 @@ python thread_sweep.py mark-posted --url <thread-url> --pattern <topic> --commen
 | `default_window_days` | first-run window | `14` |
 | `state_dir` / `candidates_file` | where state and output live | `state` / `candidates.json` |
 
-The example config is a real one: the topic groups the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project actually sweeps with.
+The example config is a snapshot, as of 2026-10-03, of the topic groups the [agent-workspace-architecture](https://github.com/jimy-r/agent-workspace-architecture) project sweeps with. The live set moves, so read it as a worked example rather than the current list.
 
 ### When the window advances
 
