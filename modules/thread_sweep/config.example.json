@@ -122,7 +122,7 @@
       ]
     },
     "ideation-challenge": {
-      "answers_with": "PATTERNS.md #13 — divergent-lens challenge with a held-out sample",
+      "answers_with": "PATTERNS.md #13 — divergent-lens challenge, each firing tagged by the human",
       "phrases": [
         "claude agrees with everything",
         "llm sycophancy design decisions",
