@@ -42,6 +42,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -53,6 +54,7 @@ from sweepcore import (  # noqa: E402
     earned_stamp,
     gh_graphql,
     hold_reason,
+    is_auth_failure,
     load_state,
     note_fetch_ok,
     posted_urls,
@@ -74,6 +76,24 @@ DEFAULTS = {
     "scan_code_lane": True,
     "context_terms": [],
 }
+
+# Minimum spacing between the START of one code search and the start of the
+# next. GitHub's code-search endpoint has its own authenticated limit of 10
+# requests per minute, well under the general search limit, and the code lane
+# spends one request per match string. Fired back to back, a config with more
+# than ten match strings answered `HTTP 403: API rate limit exceeded` for every
+# term past the tenth on every run (observed 2026-10-02 with sixteen), so those
+# terms were never code-searched at all. 60s / 10 requests = 6.0s is the
+# tightest spacing that keeps any one-minute stretch at the limit; 6.5s leaves
+# a margin for clock jitter and for a window that does not start on our first
+# request.
+CODE_SEARCH_MIN_INTERVAL = 6.5
+
+# How long to wait before the single retry of a code search that came back
+# rate-limited anyway (another process sharing the token, or a run started
+# inside an earlier run's window). The limit is per minute, so one full minute
+# is the shortest wait that is sure to clear it.
+CODE_SEARCH_RATE_LIMIT_WAIT = 60.0
 
 # Classification hints. A favorable mention is the default; a question mark or
 # "how do I" reads as a question; the misread markers flag a possible
@@ -256,15 +276,7 @@ def gh_search_code(term, limit):
         sys.exit("gh CLI not found — install it and run 'gh auth login'")
     if proc.returncode != 0:
         err = proc.stderr.strip()[:500]
-        low = err.lower()
-        auth_markers = (
-            "401",
-            "bad credentials",
-            "authentication",
-            "gh auth login",
-            "not logged in",
-        )
-        if any(marker in low for marker in auth_markers):
+        if is_auth_failure(err):
             sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
         return [], err
     try:
@@ -370,21 +382,55 @@ def thread_lane(cfg, since_date, errors):
     return results
 
 
-def code_lane(cfg, errors):
+def _is_rate_limited(err):
+    """True if a gh error is GitHub's rate limit talking (primary or
+    secondary), the one code-search failure that waiting can fix."""
+    return "rate limit" in (err or "").lower()
+
+
+def code_lane(cfg, errors, sleep=None, clock=None):
     """Lane 2: `gh search code` for each match string. Surfaces listings,
     awesome-lists, README references, manifests where the project appears.
     GitHub code search has no created-at filter, so the seen-store and human
     gate are the freshness backstop here (not a time window).
 
+    Paced: consecutive searches start at least CODE_SEARCH_MIN_INTERVAL apart,
+    which keeps the lane inside GitHub's 10-per-minute code-search limit. Only
+    the time still owed is slept, so the first search is immediate and a slow
+    search buys down the wait before the next. A search that comes back
+    rate-limited anyway waits CODE_SEARCH_RATE_LIMIT_WAIT and is retried
+    exactly once; a second failure, or any other kind of error, is recorded
+    and the lane moves on to the next term.
+
     Because this lane has no window, it holds no marker and takes a plain
     errors list: a code-search failure loses no stretch of time, and gating the
-    thread lane's marker on it would freeze that marker for good the first time
-    code search stayed rate-limited."""
+    thread lane's marker on it would freeze that marker for as long as code
+    search kept failing (a term that is still rate-limited after its retry,
+    say).
+
+    `sleep` and `clock` default to time.sleep and time.monotonic, looked up at
+    call time; tests pass fakes so no real second is ever spent."""
     results = []
     if not cfg.get("scan_code_lane", True):
         return results
+    sleep = time.sleep if sleep is None else sleep
+    clock = time.monotonic if clock is None else clock
+    last_start = None
+
+    def paced_search(term):
+        nonlocal last_start
+        if last_start is not None:
+            owed = CODE_SEARCH_MIN_INTERVAL - (clock() - last_start)
+            if owed > 0:
+                sleep(owed)
+        last_start = clock()
+        return gh_search_code(term, cfg["per_query"])
+
     for term in cfg["match_strings"]:
-        hits, err = gh_search_code(term, cfg["per_query"])
+        hits, err = paced_search(term)
+        if err and _is_rate_limited(err):
+            sleep(CODE_SEARCH_RATE_LIMIT_WAIT)
+            hits, err = paced_search(term)
         if err:
             errors.append(f"code/{term}: {err}")
             continue

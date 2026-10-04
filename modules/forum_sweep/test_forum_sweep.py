@@ -17,6 +17,7 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -25,6 +26,22 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forum_sweep as fs  # noqa: E402
+
+# The reddit lane holds a 61-second floor between its own requests and the
+# discourse lane 4.1 seconds per host, so a test that reaches either adapter
+# twice without faking the wait would spend real time, a minute at a stretch.
+# Patched for the whole module: an offline suite never really sleeps. Tests
+# that care about pacing install their own recording sleep (and a fake clock)
+# on top of this and assert on that.
+_NO_REAL_SLEEP = mock.patch.object(fs.time, "sleep")
+
+
+def setUpModule():
+    _NO_REAL_SLEEP.start()
+
+
+def tearDownModule():
+    _NO_REAL_SLEEP.stop()
 
 
 class MakeCandidateTests(unittest.TestCase):
@@ -148,7 +165,7 @@ class RedditOptInTests(unittest.TestCase):
         # No sources.reddit.enabled flag -> the adapter returns [] without ever
         # touching the network (discovery-only, opt-in). http_get is mocked so a
         # regression in the gate fails the assertion instead of firing a real
-        # request (and paying the lane's 2s pacing floor) from the test suite.
+        # request from the test suite.
         cfg = {"sources": {"reddit": {"subs": ["test"]}}, "query_groups": {"p": ["x"]}}
         since = datetime(2026, 6, 1, tzinfo=timezone.utc)
         with mock.patch.object(fs, "http_get") as mocked:
@@ -471,11 +488,21 @@ class RedditRssAdapterTests(unittest.TestCase):
     SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
     def setUp(self):
-        # Every request in this lane pays REDDIT_MIN_REQUEST_DELAY; real sleeps
-        # would push this class alone past a minute. Recorded, never taken.
+        # The lane's pacing memory is module-level: a stamp left by an earlier
+        # test would make this one's first request look like a second and owe
+        # the full REDDIT_MIN_REQUEST_DELAY. Cleared, and the sleep recorded
+        # rather than taken (RedditPacingTests asserts on the waits).
+        fs._LAST_REQUEST_AT.clear()
+        self.addCleanup(fs._LAST_REQUEST_AT.clear)
         patcher = mock.patch.object(fs.time, "sleep")
         self.sleeps = patcher.start()
         self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _query(url):
+        """The decoded `q` of a recorded request URL."""
+        parts = urllib.parse.urlsplit(url)
+        return urllib.parse.parse_qs(parts.query)["q"][0]
 
     def _cfg(self, subs=("ClaudeAI",), enabled=True, query_groups=None, groups=None):
         src = {"enabled": enabled, "subs": list(subs)}
@@ -506,12 +533,192 @@ class RedditRssAdapterTests(unittest.TestCase):
         url = urls[0]
         self.assertNotIn("search.json", url)
         self.assertIn("https://www.reddit.com/r/ClaudeAI/search.rss?", url)
-        self.assertIn("q=agent%20memory", url)
+        # The bare phrase, percent-encoded, and nothing wrapped around it.
+        self.assertIn("?q=agent%20memory&", url)
         self.assertIn("restrict_sr=1", url)
         self.assertIn("sort=new", url)
         # The bucket logic is unchanged from the .json transport: a window
         # reaching back past a month asks for the year bucket.
         self.assertIn("&t=year", url)
+        self.assertIn("&limit=100", url)
+
+    def test_one_request_per_phrase_covers_every_sub(self):
+        # The anonymous budget is one request a minute (observed 2026-10-02),
+        # so the old one-request-per-sub-per-phrase shape -- twelve requests
+        # for this config -- could not finish. Every sub now shares a request
+        # (joined with a literal `+` in the path), which leaves one request
+        # per phrase: four here, whatever the number of subs.
+        cfg = self._cfg(
+            subs=("LocalLLaMA", "ClaudeAI", "AI_Agents"),
+            query_groups={
+                "memory": ["agent memory", "memory bloat", "stale facts"],
+                "hooks": ["pretooluse hook"],
+            },
+        )
+        urls, record = self._recorder(_reddit_feed())
+        with mock.patch.object(fs, "http_get", record):
+            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(len(urls), 4)
+        for url in urls:
+            self.assertIn(
+                "https://www.reddit.com/r/LocalLLaMA+ClaudeAI+AI_Agents/search.rss?",
+                url,
+            )
+            self.assertIn("&restrict_sr=1&sort=new&t=year&limit=100", url)
+        self.assertEqual(
+            [self._query(url) for url in urls],
+            ["agent memory", "memory bloat", "stale facts", "pretooluse hook"],
+        )
+
+    def test_query_is_the_bare_phrase_never_parenthesised_or_or_joined(self):
+        # Parentheses or an OR operator switch reddit's search from its loose
+        # relevance match to strict boolean matching, where every word is
+        # required. Observed 2026-10-02: a bare five-word phrase returned 11
+        # entries; the same phrase in parentheses, and three phrases OR-joined
+        # with or without parentheses, each returned 0. So phrases never share
+        # a request and nothing is wrapped around one.
+        cfg = self._cfg(
+            subs=("LocalLLaMA", "ClaudeAI"),
+            query_groups={"memory": ["keeping agent memory current", "memory bloat"]},
+        )
+        urls, record = self._recorder(_reddit_feed())
+        with mock.patch.object(fs, "http_get", record):
+            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(len(urls), 2)
+        for url in urls:
+            query = self._query(url)
+            self.assertNotIn("(", query)
+            self.assertNotIn(")", query)
+            self.assertNotIn(" OR ", query)
+            self.assertNotIn("%28", url)
+            self.assertNotIn("%29", url)
+        self.assertIn("?q=keeping%20agent%20memory%20current&", urls[0])
+        self.assertIn("?q=memory%20bloat&", urls[1])
+
+    def test_blank_phrases_are_skipped(self):
+        # A blank phrase would spend one of the lane's one-a-minute requests
+        # on an empty search.
+        cfg = self._cfg(query_groups={"memory": ["agent memory", "", "   "]})
+        urls, record = self._recorder(_reddit_feed())
+        with mock.patch.object(fs, "http_get", record):
+            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual([self._query(url) for url in urls], ["agent memory"])
+
+    def test_sub_names_are_quoted_one_by_one_and_blanks_are_skipped(self):
+        # Quoting the joined path would turn the `+` separator into %2B. Each
+        # name is quoted on its own; an empty or whitespace entry is dropped
+        # rather than leaving a dangling `+`.
+        cfg = self._cfg(subs=("Claude AI", "", "  ", " LLMDevs "))
+        urls, record = self._recorder(_reddit_feed())
+        with mock.patch.object(fs, "http_get", record):
+            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(len(urls), 1)
+        self.assertIn("/r/Claude%20AI+LLMDevs/search.rss?", urls[0])
+        self.assertNotIn("%2B", urls[0])
+
+    def test_each_candidate_is_attributed_to_the_sub_in_its_own_link(self):
+        # One response now spans every sub, so the entry's permalink is the
+        # only record of where a thread lives. The per-sub source label (and
+        # the per-source cap keyed on it) must survive the merged request.
+        feed = _reddit_feed(
+            _reddit_entry(href="https://www.reddit.com/r/LocalLLaMA/comments/a1/x/"),
+            _reddit_entry(href="https://www.reddit.com/r/ClaudeAI/comments/b2/y/"),
+            _reddit_entry(href="https://www.reddit.com/r/LocalLLaMA/comments/c3/z/"),
+        )
+        cfg = self._cfg(subs=("LocalLLaMA", "ClaudeAI", "AI_Agents"))
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(
+            [c["source"] for c in results],
+            ["r/LocalLLaMA", "r/ClaudeAI", "r/LocalLLaMA"],
+        )
+        # Pattern attribution is unchanged: the group the request was for.
+        self.assertEqual({c["pattern"] for c in results}, {"memory"})
+
+    def test_source_label_keeps_the_configured_spelling(self):
+        # A sub configured in lower case used to be labelled in lower case
+        # (the label came from config); reddit's links carry the canonical
+        # capitalisation. Same sub, so the configured spelling is kept and a
+        # profile's existing labels do not change under it.
+        feed = _reddit_feed(
+            _reddit_entry(href="https://www.reddit.com/r/ClaudeAI/comments/b2/y/")
+        )
+        cfg = self._cfg(subs=("localllama", "claudeai"))
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["source"], "r/claudeai")
+
+    def test_entry_from_an_unconfigured_sub_keeps_its_own_label(self):
+        feed = _reddit_feed(
+            _reddit_entry(href="https://www.reddit.com/r/Elsewhere/comments/q9/x/")
+        )
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(results[0]["source"], "r/Elsewhere")
+
+    def test_link_without_a_sub_segment_falls_back_to_the_searched_subs(self):
+        # A permalink with no /r/<sub>/ in it (a profile post, say) cannot be
+        # pinned to one sub. The label falls back to what the request searched:
+        # the single sub for a one-sub config, the joined list otherwise.
+        href = "https://www.reddit.com/user/someone/comments/zz9/a_post/"
+        feed = _reddit_feed(_reddit_entry(href=href))
+        with mock.patch.object(fs, "http_get", self._serve(feed)):
+            one = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+            many = fs.reddit_adapter(
+                self._cfg(subs=("LocalLLaMA", "ClaudeAI")), self.SINCE, fs.LaneReport()
+            )
+        self.assertEqual(one[0]["source"], "r/ClaudeAI")
+        self.assertEqual(many[0]["source"], "r/LocalLLaMA+ClaudeAI")
+        self.assertEqual(one[0]["url"], href)
+
+    def test_each_failed_phrase_is_reported_under_its_group(self):
+        # The error label names the subs searched and the group, as it always
+        # has; a group with two failing phrases reports two errors.
+        cfg = self._cfg(
+            subs=("LocalLLaMA", "ClaudeAI"),
+            query_groups={"memory": ["agent memory", "memory bloat"]},
+        )
+        report = fs.LaneReport()
+        with mock.patch.object(
+            fs, "http_get", lambda url, **kwargs: (429, "", "HTTP 429")
+        ):
+            fs.reddit_adapter(cfg, self.SINCE, report)
+        self.assertEqual(
+            list(report), ["reddit r/LocalLLaMA+ClaudeAI memory: HTTP 429"] * 2
+        )
+
+    def _full_feed(self, count):
+        return _reddit_feed(
+            *(
+                _reddit_entry(href=f"https://www.reddit.com/r/ClaudeAI/comments/{n}/t/")
+                for n in range(count)
+            )
+        )
+
+    def test_a_full_page_prints_a_truncation_note(self):
+        # 100 entries is the feed's cap, so a response that full may have cut
+        # the older end of the window off. Said out loud, once, as a NOTE: the
+        # request came back, so it is not an error and does not hold the lane.
+        report = fs.LaneReport()
+        err = io.StringIO()
+        with mock.patch.object(fs, "http_get", self._serve(self._full_feed(100))):
+            with contextlib.redirect_stderr(err):
+                results = fs.reddit_adapter(self._cfg(), self.SINCE, report)
+        self.assertEqual(len(results), 100)
+        note = err.getvalue()
+        self.assertEqual(note.count("NOTE"), 1)
+        self.assertIn("NOTE reddit r/ClaudeAI memory", note)
+        self.assertIn("100", note)
+        self.assertEqual(list(report), [])
+        self.assertTrue(report.clean)
+
+    def test_a_page_under_the_cap_prints_no_note(self):
+        err = io.StringIO()
+        with mock.patch.object(fs, "http_get", self._serve(self._full_feed(99))):
+            with contextlib.redirect_stderr(err):
+                results = fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
+        self.assertEqual(len(results), 99)
+        self.assertNotIn("NOTE", err.getvalue())
 
     def test_entry_maps_onto_the_shared_candidate_schema(self):
         with mock.patch.object(
@@ -622,46 +829,32 @@ class RedditRssAdapterTests(unittest.TestCase):
         self.assertIn("unparseable XML", report[0])
         self.assertFalse(report.clean)
 
-    def test_one_failed_sub_does_not_stop_the_next(self):
+    def test_one_failed_phrase_does_not_stop_the_next(self):
+        # The unit of failure is now a phrase's request, not a sub's: every
+        # sub rides in the same request, so there is no per-sub request to
+        # fail.
         feed = _reddit_feed(_reddit_entry())
         calls = []
 
         def flaky(url, **kwargs):
             calls.append(url)
-            if "/r/Broken/" in url:
+            if "broken%20phrase" in url:
                 return 503, "", "HTTP 503"
             return 200, feed, None
 
+        cfg = self._cfg(
+            subs=("LocalLLaMA", "ClaudeAI"),
+            query_groups={"broken": ["broken phrase"], "memory": ["agent memory"]},
+        )
         report = fs.LaneReport()
         with mock.patch.object(fs, "http_get", flaky):
-            results = fs.reddit_adapter(
-                self._cfg(subs=("Broken", "ClaudeAI")), self.SINCE, report
-            )
+            results = fs.reddit_adapter(cfg, self.SINCE, report)
         self.assertEqual(len(calls), 2)
         self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["pattern"], "memory")
+        self.assertEqual(len(report), 1)
+        self.assertIn("reddit r/LocalLLaMA+ClaudeAI broken", report[0])
         self.assertFalse(report.clean)
-
-    def test_requests_are_paced_at_the_lane_floor(self):
-        cfg = self._cfg(query_groups={"memory": ["agent memory", "memory bloat"]})
-        with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
-            fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
-        self.assertEqual(self.sleeps.call_count, 2)
-        for call in self.sleeps.call_args_list:
-            self.assertGreaterEqual(call.args[0], 2.0)
-            self.assertGreaterEqual(call.args[0], fs.REDDIT_MIN_REQUEST_DELAY)
-
-    def test_floor_wins_over_a_smaller_global_request_delay(self):
-        with mock.patch.object(fs, "REQUEST_DELAY", 0.5):
-            with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
-                fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
-        self.assertEqual(self.sleeps.call_args_list[0].args[0], 2.0)
-
-    def test_a_larger_global_request_delay_still_wins(self):
-        # The floor raises reddit's pace, it never lowers an operator's setting.
-        with mock.patch.object(fs, "REQUEST_DELAY", 5.0):
-            with mock.patch.object(fs, "http_get", self._serve(_reddit_feed())):
-                fs.reddit_adapter(self._cfg(), self.SINCE, fs.LaneReport())
-        self.assertEqual(self.sleeps.call_args_list[0].args[0], 5.0)
 
     def test_other_lanes_keep_the_global_delay(self):
         # The floor is reddit-local: raising it must not slow the rest.
@@ -678,6 +871,167 @@ class RedditRssAdapterTests(unittest.TestCase):
                     fs.LaneReport(),
                 )
         self.assertEqual(self.sleeps.call_args_list[0].args[0], 0.5)
+
+
+class RedditPacingTests(unittest.TestCase):
+    """The reddit lane's floor between its own requests. The anonymous feed
+    budget is one request per 60-second window (observed 2026-10-02), so a
+    second request sent sooner is a guaranteed HTTP 429, and one 429 holds the
+    whole lane's marker. The floor is owed time: nothing before the lane's
+    first request, the remainder of the window before each later one."""
+
+    SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    def setUp(self):
+        fs._LAST_REQUEST_AT.clear()
+        self.addCleanup(fs._LAST_REQUEST_AT.clear)
+        # A fake clock the recorded sleeps advance, as in DiscoursePacingTests.
+        self.now = 1000.0
+        self.sleeps = []
+
+        def fake_sleep(seconds):
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+        for patcher in (
+            mock.patch.object(fs.time, "sleep", fake_sleep),
+            mock.patch.object(fs.time, "monotonic", lambda: self.now),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _cfg(self, groups=1):
+        return {
+            "sources": {
+                "reddit": {"enabled": True, "subs": ["LocalLLaMA", "ClaudeAI"]}
+            },
+            "query_groups": {f"group{n}": [f"phrase {n}"] for n in range(groups)},
+        }
+
+    def _run(self, cfg, http_get=None):
+        sent = []
+
+        def record(url, **kwargs):
+            sent.append(self.now)
+            return 200, _reddit_feed(), None
+
+        report = fs.LaneReport()
+        with mock.patch.object(fs, "http_get", http_get or record):
+            fs.reddit_adapter(cfg, self.SINCE, report)
+        return sent, report
+
+    def test_the_floor_covers_the_one_minute_window(self):
+        self.assertEqual(fs.REDDIT_MIN_REQUEST_DELAY, 61.0)
+        self.assertGreater(fs.REDDIT_MIN_REQUEST_DELAY, 60.0)
+
+    def test_a_lane_with_one_request_never_sleeps(self):
+        sent, _report = self._run(self._cfg(groups=1))
+        self.assertEqual(sent, [1000.0])
+        self.assertEqual(self.sleeps, [])
+
+    def test_first_request_is_immediate_and_the_second_waits_the_floor(self):
+        sent, report = self._run(self._cfg(groups=2))
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY])
+        self.assertEqual(sent, [1000.0, 1061.0])
+        self.assertTrue(report.clean)
+
+    def test_every_later_request_waits_out_the_previous_window(self):
+        sent, _report = self._run(self._cfg(groups=4))
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY] * 3)
+        for earlier, later in zip(sent, sent[1:], strict=False):
+            self.assertGreater(later - earlier, 60.0)
+
+    def test_three_phrase_group_makes_three_requests_and_waits_twice(self):
+        # Phrases cannot share a request (an OR-joined query matches nothing),
+        # so a group costs one request per phrase against the same
+        # one-a-minute budget: the first immediate, the floor before each of
+        # the other two.
+        cfg = self._cfg(groups=1)
+        cfg["query_groups"] = {
+            "memory": ["agent memory", "memory bloat", "stale facts"]
+        }
+        sent, report = self._run(cfg)
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY] * 2)
+        self.assertEqual(sent, [1000.0, 1061.0, 1122.0])
+        self.assertTrue(report.clean)
+
+    def test_only_the_time_still_owed_is_slept(self):
+        # 20s spent parsing the first response is 20s of the window already
+        # served; the lane owes the remaining 41, not a fresh 61.
+        calls = []
+
+        def slow_to_parse(url, **kwargs):
+            calls.append(self.now)
+            return 200, _reddit_feed(), None
+
+        real_fromstring = fs.ET.fromstring
+
+        def parse_slowly(body):
+            self.now += 20.0
+            return real_fromstring(body)
+
+        with mock.patch.object(fs.ET, "fromstring", parse_slowly):
+            self._run(self._cfg(groups=2), http_get=slow_to_parse)
+        self.assertEqual(self.sleeps, [41.0])
+        self.assertEqual(calls, [1000.0, 1061.0])
+
+    def test_floor_is_measured_from_the_response_not_the_send(self):
+        # sweepcore.http_get can sit out a rate-limit window and retry inside
+        # one call (a run started inside an earlier run's window). The window
+        # that matters afterwards opened when that retry was answered, so the
+        # next request owes the full floor from the response, however long the
+        # call itself took.
+        calls = []
+
+        def retried_inside(url, **kwargs):
+            calls.append(self.now)
+            if len(calls) == 1:
+                self.now += 60.0  # the wait http_get took before its retry
+            return 200, _reddit_feed(), None
+
+        self._run(self._cfg(groups=2), http_get=retried_inside)
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY])
+        self.assertEqual(calls, [1000.0, 1121.0])
+
+    def test_a_failed_request_still_starts_the_clock(self):
+        # A 429 is still a request reddit counted. The next one waits the
+        # floor all the same, and the failure holds the lane.
+        calls = []
+
+        def first_fails(url, **kwargs):
+            calls.append(self.now)
+            if len(calls) == 1:
+                return 429, "", "HTTP 429"
+            return 200, _reddit_feed(), None
+
+        _sent, report = self._run(self._cfg(groups=2), http_get=first_fails)
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY])
+        self.assertFalse(report.clean)
+
+    def test_floor_wins_over_a_smaller_global_request_delay(self):
+        with mock.patch.object(fs, "REQUEST_DELAY", 0.5):
+            self._run(self._cfg(groups=2))
+        self.assertEqual(self.sleeps, [fs.REDDIT_MIN_REQUEST_DELAY])
+
+    def test_a_larger_global_request_delay_still_wins(self):
+        # The floor raises reddit's pace, it never lowers an operator's setting.
+        with mock.patch.object(fs, "REQUEST_DELAY", 90.0):
+            self._run(self._cfg(groups=2))
+        self.assertEqual(self.sleeps, [90.0])
+
+    def test_reddit_pacing_does_not_charge_the_discourse_hosts(self):
+        # The floor is keyed on reddit alone. A discourse host first contacted
+        # right after a reddit request owes nothing on reddit's account.
+        self._run(self._cfg(groups=1))
+        payload = json.dumps({"topics": [], "posts": []})
+        cfg = {
+            "sources": {"discourse": {"instances": ["forum.example.com"]}},
+            "query_groups": {"memory": ["agent memory"]},
+        }
+        with mock.patch.object(fs, "http_get", lambda url, **kw: (200, payload, None)):
+            fs.discourse_adapter(cfg, self.SINCE, fs.LaneReport())
+        self.assertEqual(self.sleeps, [])
 
 
 class LaneQueryGroupsTests(unittest.TestCase):
@@ -749,7 +1103,7 @@ class LaneQueryGroupsTests(unittest.TestCase):
             with mock.patch.object(fs, "http_get", record):
                 fs.reddit_adapter(cfg, self.SINCE, fs.LaneReport())
         self.assertEqual(len(urls), 1)
-        self.assertIn("q=agent%20memory", urls[0])
+        self.assertIn("?q=agent%20memory&", urls[0])
 
     def test_hn_lane_requests_only_the_whitelisted_groups(self):
         cfg = {
@@ -1260,6 +1614,156 @@ class AdvanceOnlyOnCleanFetchTests(ScanHarness, unittest.TestCase):
                 (Path(tmp) / "candidates.json").read_text(encoding="utf-8")
             )
             self.assertEqual(payload["sources_held"], ["hn"])
+
+
+class UnconfiguredLaneWarningTests(ScanHarness, unittest.TestCase):
+    """`--source all` selects every adapter, including the ones a profile
+    never configured. Those make no request -- correctly -- and each run used
+    to list them all under `WARN no clean fetch (no request completed: ...)`,
+    burying the lanes that had really failed in a list of lanes nobody asked
+    for. A lane whose block is absent, or says `enabled: false`, now stays out
+    of the warnings. It is still held: its marker does not move."""
+
+    WARN = "WARN no clean fetch"
+
+    def _scan_all(self, tmp, sources, adapters=None, last_run=None):
+        cfg_path, state_file = self._setup(
+            tmp,
+            {"last_run_by_source": dict(last_run or self.OLD), "seen": {}},
+            sources=sources,
+        )
+        stubs = {"discourse": self._adapter(hits=1)}
+        stubs.update(adapters or {})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(fs, "http_get") as http:
+                self._scan(cfg_path, "all", stubs)
+        # Nothing below stubs a lane that would reach the network; a real
+        # adapter that tried to would land here instead of on the wire.
+        http.assert_not_called()
+        return err.getvalue(), state_file
+
+    def _warn_line(self, stderr):
+        lines = [line for line in stderr.splitlines() if line.startswith(self.WARN)]
+        self.assertEqual(len(lines), 1, stderr)
+        return lines[0]
+
+    def test_absent_sources_are_silent(self):
+        # Only discourse is configured, and it fetches cleanly. The other
+        # seven lanes have no block at all: nothing to warn about.
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(tmp, {"discourse": {"instances": ["x"]}})
+            self.assertNotIn(self.WARN, stderr)
+            self.assertNotIn("no request completed", stderr)
+
+    def test_explicitly_disabled_sources_are_silent(self):
+        sources = {
+            "discourse": {"instances": ["x"]},
+            "hn": {"enabled": False},
+            "reddit": {"enabled": False, "subs": ["ClaudeAI"]},
+            "medium": {"enabled": False, "tags": ["ai"]},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(tmp, sources)
+            self.assertNotIn(self.WARN, stderr)
+
+    def test_enabled_lane_that_made_no_request_still_warns(self):
+        # Present and switched on, but with nothing to query: a config that
+        # asked for a scan and got none. That is still worth saying, and the
+        # unconfigured lanes around it still are not.
+        sources = {
+            "discourse": {"instances": ["x"]},
+            "lobsters": {"tags": []},
+            "reddit": {"enabled": True, "subs": []},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(tmp, sources)
+            line = self._warn_line(stderr)
+            self.assertIn("no request completed: lobsters, reddit)", line)
+            for silent in ("hn", "stackexchange", "devto", "medium", "lemmy"):
+                self.assertNotIn(silent, line)
+
+    def test_opt_in_block_with_enabled_left_out_still_warns(self):
+        # Only an explicit `enabled: false` reads as "not asked for". A block
+        # that is present but never switched on is a half-finished config.
+        sources = {"discourse": {"instances": ["x"]}, "hn": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(tmp, sources)
+            self.assertIn("no request completed: hn)", self._warn_line(stderr))
+
+    def test_failed_lane_warns_even_when_its_block_is_absent(self):
+        # The quiet is for lanes where nothing was tried. An error is news
+        # whatever the config says.
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(
+                tmp,
+                {"discourse": {"instances": ["x"]}},
+                adapters={
+                    "hn": self._adapter(hits=0, error="hn: HTTP 503", fetched=False)
+                },
+            )
+            line = self._warn_line(stderr)
+            self.assertIn("requests failed: hn)", line)
+            self.assertNotIn("no request completed", line)
+
+    def test_failed_and_unrequested_lanes_are_still_grouped_by_reason(self):
+        sources = {"discourse": {"instances": ["x"]}, "lobsters": {"tags": []}}
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(
+                tmp,
+                sources,
+                adapters={"discourse": self._adapter(hits=1, error="discourse: 503")},
+            )
+            line = self._warn_line(stderr)
+            self.assertIn("requests failed: discourse", line)
+            self.assertIn("no request completed: lobsters", line)
+
+    def test_silent_lanes_still_hold_their_markers(self):
+        sources = {"discourse": {"instances": ["x"]}, "hn": {"enabled": False}}
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, state_file = self._scan_all(tmp, sources)
+            self.assertNotIn(self.WARN, stderr)
+            marks = self._marks(state_file)
+            # The lane that fetched advanced; the absent and the disabled
+            # ones kept exactly the marker they came in with.
+            self.assertNotEqual(marks["discourse"], self.OLD["discourse"])
+            for held in ("hn", "lobsters", "reddit"):
+                self.assertEqual(marks[held], self.OLD[held])
+            # A lane with no prior marker is not handed one either.
+            for never_ran in ("stackexchange", "devto", "medium", "lemmy"):
+                self.assertNotIn(never_ran, marks)
+            payload = json.loads(
+                (Path(tmp) / "candidates.json").read_text(encoding="utf-8")
+            )
+            # Quiet on stderr is not a claim of coverage: the digest still
+            # lists every lane that did not complete a clean fetch.
+            self.assertEqual(
+                payload["sources_held"], [s for s in fs.SOURCES if s != "discourse"]
+            )
+
+    def test_stale_marker_warning_skips_silent_lanes(self):
+        # An unconfigured lane's marker never moves, so it is always "held
+        # for weeks". Warning about that every run is the same noise again.
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(
+                tmp,
+                {"discourse": {"instances": ["x"]}, "hn": {"enabled": False}},
+                last_run={"hn": old, "medium": old},
+            )
+            self.assertNotIn("last_run held for", stderr)
+
+    def test_stale_marker_warning_still_names_a_configured_lane(self):
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr, _state = self._scan_all(
+                tmp,
+                {"discourse": {"instances": ["x"]}, "lobsters": {"tags": []}},
+                last_run={"lobsters": old, "medium": old},
+            )
+            self.assertIn("last_run held for", stderr)
+            self.assertIn("lobsters (40d)", stderr)
+            self.assertNotIn("medium (", stderr)
 
 
 class FetchAccountingTests(ScanHarness, unittest.TestCase):

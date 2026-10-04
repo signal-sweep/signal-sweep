@@ -10,7 +10,8 @@ on the second use, not the first" rule):
   - paths:   resolve_module_path  (module-anchored, never CWD-anchored)
   - state:   load_state, write_json_atomic
   - ledger:  posted_urls, density_counts, append_ledger
-  - gh:      gh, gh_graphql   (auth failure -> exit with a 'gh auth login' hint)
+  - gh:      gh, gh_graphql, is_auth_failure
+             (auth failure -> exit with a 'gh auth login' hint)
   - http:    http_get         (public read with 429/503 Retry-After backoff)
   - window:  LaneReport, note_fetch_ok, parse_stamp, window_start, earned_stamp,
              hold_reason     (the earned-marker rule every scanning module obeys)
@@ -35,13 +36,31 @@ from pathlib import Path
 
 # gh stderr substrings that mean "you are not authenticated". An unauthenticated
 # sweep is a misconfiguration, not a soft per-item failure, so these are fatal.
+# The status is matched as "http 401", never a bare "401": gh's rate-limit
+# message carries a request ID, a user ID and a timestamp, any of which can
+# hold those three digits, and a bare match turned that soft, retryable error
+# into a fatal exit.
 AUTH_MARKERS = (
-    "401",
+    "http 401",
     "bad credentials",
     "authentication",
     "gh auth login",
     "not logged in",
 )
+
+
+def is_auth_failure(err):
+    """True if gh's stderr says the caller is not authenticated.
+
+    A rate-limit message is never an auth failure, whatever else it happens to
+    contain: it is the one gh error a caller can wait out, so it must reach the
+    caller as an ordinary error instead of ending the run.
+    """
+    low = (err or "").lower()
+    if "rate limit" in low:
+        return False
+    return any(marker in low for marker in AUTH_MARKERS)
+
 
 DEFAULT_UA = "signal-sweep (+https://github.com/signal-sweep/signal-sweep)"
 
@@ -316,7 +335,7 @@ def gh(args):
         sys.exit("gh CLI not found — install it and run 'gh auth login'")
     if proc.returncode != 0:
         err = proc.stderr.strip()[:300]
-        if any(marker in err.lower() for marker in AUTH_MARKERS):
+        if is_auth_failure(err):
             sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
         return None, err
     out = proc.stdout.strip()
@@ -339,7 +358,7 @@ def gh_graphql(query, **variables):
         sys.exit("gh CLI not found — install it and run 'gh auth login'")
     if proc.returncode != 0:
         err = proc.stderr.strip()[:500]
-        if any(marker in err.lower() for marker in AUTH_MARKERS):
+        if is_auth_failure(err):
             sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
         return None, err
     try:
@@ -351,24 +370,56 @@ def gh_graphql(query, **variables):
 # --- http --------------------------------------------------------------------
 
 
+# Ceiling on a wait read from an x-ratelimit-reset header. Some venues send no
+# Retry-After on a 429 and instead say how many seconds remain in the current
+# quota window (observed 2026-10-02 on an anonymous feed read whose budget is
+# one request per 60-second window: `x-ratelimit-reset: 59`). Exponential
+# backoff retries after 1s and 2s, both still inside that window, so every
+# retry fails exactly like the first attempt and the request is lost. Waiting
+# out the window is the only retry that can succeed. 90s covers a full
+# one-minute window with room to spare and still bounds what a hostile or
+# broken header can cost a run.
+RATELIMIT_RESET_CAP = 90.0
+
+# Added to the advertised reset so the retry lands just after the window
+# turns over, not on its edge.
+RATELIMIT_RESET_MARGIN = 1.0
+
+# A reset value this large is a Unix timestamp (the convention some APIs use
+# for the same header name), not a count of seconds remaining. Reading it as a
+# delta would turn every such 429/503 into a full RATELIMIT_RESET_CAP wait, so
+# it is left to the ordinary backoff instead.
+_RESET_EPOCH_FLOOR = 1_000_000_000
+
+
 def _retry_after_seconds(exc, attempt, backoff_base):
     """Seconds to wait before a retry: honour a Retry-After header if present
-    (capped), else bounded exponential backoff."""
+    (capped); else an x-ratelimit-reset header holding the seconds left in the
+    quota window (plus a margin, capped); else bounded exponential backoff."""
     header = exc.headers.get("Retry-After") if exc.headers else None
     if header:
         try:
             return min(float(header), 30.0)
         except ValueError:
             pass
+    reset = exc.headers.get("x-ratelimit-reset") if exc.headers else None
+    if reset:
+        try:
+            seconds = float(reset)
+        except ValueError:
+            seconds = None
+        if seconds is not None and 0 <= seconds < _RESET_EPOCH_FLOOR:
+            return min(seconds + RATELIMIT_RESET_MARGIN, RATELIMIT_RESET_CAP)
     return min(backoff_base**attempt, 30.0)
 
 
 def http_get(url, timeout=15, headers=None, retries=2, backoff_base=2.0):
     """Public GET -> (status, body, err). Retries on 429/503 honouring
-    Retry-After (a transient rate-limit on one venue must not silently drop it
-    for a whole run); other failures return immediately. err is None only on a
-    response that was read; non-None is a short description for the caller's
-    errors[] list."""
+    Retry-After, or failing that an x-ratelimit-reset count of seconds (a
+    transient rate-limit on one venue must not silently drop it for a whole
+    run); other failures return immediately. err is None only on a response
+    that was read; non-None is a short description for the caller's errors[]
+    list."""
     scheme = url.split(":", 1)[0].lower() if ":" in url else ""
     if scheme not in ("http", "https"):
         # Defence in depth: nothing in this codebase should ever ask for a
