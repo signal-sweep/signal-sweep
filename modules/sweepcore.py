@@ -8,6 +8,7 @@ copy-pasted into every new module (the fourth copy tripped CLAUDE.md's "extract
 on the second use, not the first" rule):
 
   - paths:   resolve_module_path  (module-anchored, never CWD-anchored)
+  - config:  warn_unknown_keys    (a misspelt key is named, never dropped silently)
   - state:   load_state, write_json_atomic
   - ledger:  posted_urls, density_counts, append_ledger
   - gh:      gh, gh_graphql, is_auth_failure
@@ -24,6 +25,7 @@ Nothing here is outbound. The human approval gate lives in each module's mark-*
 path, never in this file.
 """
 
+import difflib
 import json
 import os
 import subprocess
@@ -93,6 +95,36 @@ def resolve_module_path(module_file, value):
     if path.is_absolute():
         return path
     return Path(os.path.normpath(Path(module_file).resolve().parent / path))
+
+
+# --- config ------------------------------------------------------------------
+
+
+def warn_unknown_keys(cfg, known, label):
+    """Name every top-level config key a module does not read, on stderr.
+
+    A loader checks its required keys and fills in defaults, so a misspelt
+    optional key used to be dropped without a word, and the setting it was
+    meant to change stayed at its default. This is advisory and never exits:
+    the example configs are meant to be copied and edited, and a spare key does
+    no harm. A key that starts with an underscore is a comment by the examples'
+    convention (`_comment`) and is skipped.
+
+    `known` is every top-level key the module reads. Returns the unknown keys
+    in config order, so a caller or a test can see what was flagged.
+    """
+    if not isinstance(cfg, dict):
+        return []
+    known = sorted(set(known))
+    unknown = [key for key in cfg if key not in known and not key.startswith("_")]
+    for key in unknown:
+        close = difflib.get_close_matches(key, known, n=1)
+        hint = f" (did you mean {close[0]!r}?)" if close else ""
+        print(
+            f"WARN {label}: unknown config key {key!r} is ignored{hint}",
+            file=sys.stderr,
+        )
+    return unknown
 
 
 # --- state -------------------------------------------------------------------

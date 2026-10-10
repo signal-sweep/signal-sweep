@@ -44,7 +44,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from sweepcore import append_ledger, gh, resolve_module_path  # noqa: E402
+from sweepcore import (  # noqa: E402
+    append_ledger,
+    gh,
+    resolve_module_path,
+    warn_unknown_keys,
+)
 
 # Module-anchored, not CWD-anchored: the announced-ledger and the assembled
 # brief belong to this module wherever it is invoked from. Anchoring these on
@@ -97,6 +102,7 @@ def load_channels(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, ("channels",), "release-sweep")
     chans = cfg.get("channels")
     if not isinstance(chans, list) or not chans:
         sys.exit("config must have a non-empty 'channels' list")

@@ -101,6 +101,72 @@ class StateTests(unittest.TestCase):
             self.assertEqual(list(p.parent.glob("*.tmp")), [])
 
 
+class UnknownConfigKeyTests(unittest.TestCase):
+    """warn_unknown_keys names a config key the module does not read.
+
+    A misspelt optional key used to be dropped without a word, so the setting
+    it was meant to change silently kept its default.
+    """
+
+    KNOWN = ("own_login", "queries", "exclude_authors", "min_stars")
+
+    def _run(self, cfg, known=KNOWN, label="thread-sweep"):
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            unknown = sc.warn_unknown_keys(cfg, known, label)
+        return unknown, err.getvalue()
+
+    def test_known_keys_only_is_silent(self):
+        unknown, err = self._run({"own_login": "me", "queries": {}, "min_stars": 5})
+        self.assertEqual(unknown, [])
+        self.assertEqual(err, "")
+
+    def test_a_misspelt_key_is_named_with_the_nearest_known_key(self):
+        unknown, err = self._run({"own_login": "me", "exclude_author": ["bot"]})
+        self.assertEqual(unknown, ["exclude_author"])
+        self.assertEqual(
+            err,
+            "WARN thread-sweep: unknown config key 'exclude_author' is ignored "
+            "(did you mean 'exclude_authors'?)\n",
+        )
+
+    def test_a_key_with_no_near_match_gets_no_suggestion(self):
+        unknown, err = self._run({"zzz_totally_other": 1})
+        self.assertEqual(unknown, ["zzz_totally_other"])
+        self.assertIn("unknown config key 'zzz_totally_other' is ignored\n", err)
+        self.assertNotIn("did you mean", err)
+
+    def test_each_unknown_key_gets_its_own_line_in_config_order(self):
+        unknown, err = self._run({"b_extra": 1, "own_login": "me", "a_extra": 2})
+        self.assertEqual(unknown, ["b_extra", "a_extra"])
+        lines = err.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("'b_extra'", lines[0])
+        self.assertIn("'a_extra'", lines[1])
+
+    def test_underscore_keys_are_comments_and_never_flagged(self):
+        unknown, err = self._run({"_comment": "edit me", "_note": 1, "queries": {}})
+        self.assertEqual(unknown, [])
+        self.assertEqual(err, "")
+
+    def test_it_is_advisory_and_never_exits(self):
+        # Returns normally whatever it finds: the example configs are meant to
+        # be copied and edited, and a spare key is harmless.
+        unknown, _err = self._run({"nope": 1, "also_nope": 2}, known=())
+        self.assertEqual(unknown, ["nope", "also_nope"])
+
+    def test_a_config_that_is_not_an_object_is_left_to_the_loader(self):
+        for cfg in ([], ["a"], "text", 3, None):
+            with self.subTest(cfg=cfg):
+                unknown, err = self._run(cfg)
+                self.assertEqual(unknown, [])
+                self.assertEqual(err, "")
+
+    def test_the_label_names_the_module(self):
+        _unknown, err = self._run({"nope": 1}, label="cfp-sweep")
+        self.assertTrue(err.startswith("WARN cfp-sweep: "))
+
+
 class WindowMarkerTests(unittest.TestCase):
     """The earned-marker rule every scanning module shares.
 

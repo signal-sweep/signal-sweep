@@ -54,6 +54,7 @@ from sweepcore import (  # noqa: E402
     load_state,
     note_fetch_ok,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -71,6 +72,10 @@ DEFAULTS = {
     "placements_path": None,
     "fit_floor": 1,
 }
+# Read with cfg.get() and no default: left out, the drafted entry line carries
+# no tagline. A new key belongs here or in DEFAULTS, or load_config reports it
+# as unknown.
+OPTIONAL_KEYS = ["own_tagline"]
 
 UA = "list-sweep (https://github.com/signal-sweep/signal-sweep)"
 INTAKE_TIMEOUT = 15
@@ -141,6 +146,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS, *OPTIONAL_KEYS), "list-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")

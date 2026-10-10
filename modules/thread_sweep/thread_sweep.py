@@ -40,6 +40,7 @@ from sweepcore import (  # noqa: E402
     posted_urls,
     relevance_tier,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -56,6 +57,9 @@ DEFAULTS = {
     "candidates_file": "candidates.json",
     "watchlist": [],
 }
+# Read with cfg.get() and no default: leaving one out switches that filter off.
+# A new key belongs here or in DEFAULTS, or load_config reports it as unknown.
+OPTIONAL_KEYS = ["exclude_authors"]
 
 ISSUE_FIELDS = """
   ... on Issue {
@@ -87,6 +91,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS, *OPTIONAL_KEYS), "thread-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from sweepcore import http_get, resolve_module_path  # noqa: E402
+from sweepcore import http_get, resolve_module_path, warn_unknown_keys  # noqa: E402
 
 UA = "placement-health (https://github.com/signal-sweep/signal-sweep)"
 DEFAULT_TIMEOUT = 15
@@ -48,6 +48,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, ("placements",), "placement-health")
     items = cfg.get("placements")
     if not isinstance(items, list) or not items:
         sys.exit("config must have a non-empty 'placements' list")

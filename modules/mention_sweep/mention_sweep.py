@@ -59,6 +59,7 @@ from sweepcore import (  # noqa: E402
     note_fetch_ok,
     posted_urls,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -164,6 +165,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "mention-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
