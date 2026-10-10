@@ -269,8 +269,8 @@ class DiscoursePacingTests(unittest.TestCase):
     SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
     def setUp(self):
-        fs._LAST_REQUEST_AT.clear()
-        self.addCleanup(fs._LAST_REQUEST_AT.clear)
+        fs._PACER.reset()
+        self.addCleanup(fs._PACER.reset)
         # A fake clock the recorded sleeps advance. Real seconds are not spent,
         # and a per-host wait stays distinguishable from a lane-wide one.
         self.now = 1000.0
@@ -324,9 +324,11 @@ class DiscoursePacingTests(unittest.TestCase):
         self.assertEqual(self.sleeps, [fs.DISCOURSE_MIN_REQUEST_DELAY])
 
     def test_elapsed_time_counts_toward_the_hosts_floor(self):
-        fs._pace_host("https://a.example.com", 1.0)
+        # The rule itself is sweepcore.Pacer's and is tested there. This pins
+        # that the lane's own pacer reads the clock these tests control.
+        fs._PACER.wait("https://a.example.com", 1.0)
         self.now += 0.75  # 0.75s of other work: fetching, parsing, another host
-        fs._pace_host("https://a.example.com", 1.0)
+        fs._PACER.wait("https://a.example.com", 1.0)
         self.assertEqual(self.sleeps, [0.25])
 
     def test_the_floor_wins_over_a_smaller_global_request_delay(self):
@@ -492,8 +494,8 @@ class RedditRssAdapterTests(unittest.TestCase):
         # test would make this one's first request look like a second and owe
         # the full REDDIT_MIN_REQUEST_DELAY. Cleared, and the sleep recorded
         # rather than taken (RedditPacingTests asserts on the waits).
-        fs._LAST_REQUEST_AT.clear()
-        self.addCleanup(fs._LAST_REQUEST_AT.clear)
+        fs._PACER.reset()
+        self.addCleanup(fs._PACER.reset)
         patcher = mock.patch.object(fs.time, "sleep")
         self.sleeps = patcher.start()
         self.addCleanup(patcher.stop)
@@ -883,8 +885,8 @@ class RedditPacingTests(unittest.TestCase):
     SINCE = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
     def setUp(self):
-        fs._LAST_REQUEST_AT.clear()
-        self.addCleanup(fs._LAST_REQUEST_AT.clear)
+        fs._PACER.reset()
+        self.addCleanup(fs._PACER.reset)
         # A fake clock the recorded sleeps advance, as in DiscoursePacingTests.
         self.now = 1000.0
         self.sleeps = []

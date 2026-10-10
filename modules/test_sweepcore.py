@@ -527,6 +527,129 @@ class RetryAfterSecondsTests(unittest.TestCase):
         self.assertEqual(sc._retry_after_seconds(self._exc(headers), 0, 2.0), 1.0)
 
 
+class PacerTests(unittest.TestCase):
+    """Owed-time pacing: the one copy that forum_sweep's per-host lanes and
+    mention_sweep's code lane both run on. Each lane's own suite still checks
+    the request times it produces; these check the rule."""
+
+    def setUp(self):
+        # A fake clock the recorded sleeps advance, so a wait and the time it
+        # buys are both visible and no real second is spent.
+        self.now = 1000.0
+        self.sleeps = []
+        self.pacer = sc.Pacer(sleep=self._sleep, clock=self._clock)
+
+    def _sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def _clock(self):
+        return self.now
+
+    def test_first_contact_under_a_key_is_not_paced(self):
+        self.pacer.wait("a", 5.0)
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_repeat_request_waits_the_whole_floor(self):
+        self.pacer.wait("a", 5.0)
+        self.pacer.wait("a", 5.0)
+        self.assertEqual(self.sleeps, [5.0])
+
+    def test_elapsed_time_counts_toward_the_floor(self):
+        self.pacer.wait("a", 1.0)
+        self.now += 0.75  # other work: fetching, parsing, another key
+        self.pacer.wait("a", 1.0)
+        self.assertEqual(self.sleeps, [0.25])
+
+    def test_time_past_the_floor_owes_nothing(self):
+        self.pacer.wait("a", 1.0)
+        self.now += 3.0
+        self.pacer.wait("a", 1.0)
+        self.assertEqual(self.sleeps, [])
+
+    def test_successive_requests_start_exactly_the_floor_apart(self):
+        # The stamp is taken as the request goes out, so a request that takes
+        # a second has already paid a second of the next one's wait.
+        starts = []
+        for _ in range(4):
+            self.pacer.wait("a", 6.5)
+            starts.append(self.now)
+            self.now += 1.0
+        pairs = zip(starts, starts[1:], strict=False)
+        gaps = [later - earlier for earlier, later in pairs]
+        self.assertEqual(gaps, [6.5, 6.5, 6.5])
+        self.assertEqual(self.sleeps, [5.5, 5.5, 5.5])
+
+    def test_keys_are_paced_separately(self):
+        self.pacer.wait("a", 5.0)
+        self.pacer.wait("b", 5.0)
+        self.assertEqual(self.sleeps, [])
+        self.pacer.wait("a", 5.0)
+        self.assertEqual(self.sleeps, [5.0])
+
+    def test_a_wait_paid_under_one_key_is_elapsed_time_for_the_others(self):
+        # a, b, a, b: the second a sleeps the floor, and that sleep is real
+        # time b's own floor accepts, so the second b owes nothing.
+        for key in ("a", "b", "a", "b"):
+            self.pacer.wait(key, 5.0)
+        self.assertEqual(self.sleeps, [5.0])
+
+    def test_stamp_restarts_the_floor_from_now(self):
+        # A request that sat out a rate-limit window before it was answered:
+        # the next one owes the full floor from the response, not the send.
+        self.pacer.wait("a", 61.0)
+        self.now += 60.0
+        self.pacer.stamp("a")
+        self.pacer.wait("a", 61.0)
+        self.assertEqual(self.sleeps, [61.0])
+
+    def test_without_the_stamp_the_same_minute_counts_toward_the_floor(self):
+        self.pacer.wait("a", 61.0)
+        self.now += 60.0
+        self.pacer.wait("a", 61.0)
+        self.assertEqual(self.sleeps, [1.0])
+
+    def test_a_stamp_alone_makes_the_next_request_a_repeat(self):
+        self.pacer.stamp("a")
+        self.pacer.wait("a", 2.0)
+        self.assertEqual(self.sleeps, [2.0])
+
+    def test_a_floor_of_zero_neither_sleeps_nor_stamps(self):
+        self.pacer.wait("a", 0)
+        self.pacer.wait("a", -1.0)
+        self.assertEqual(self.sleeps, [])
+        # Nothing was stamped, so a real floor still sees first contact.
+        self.pacer.wait("a", 5.0)
+        self.assertEqual(self.sleeps, [])
+
+    def test_reset_forgets_every_key(self):
+        self.pacer.wait("a", 5.0)
+        self.pacer.wait("b", 5.0)
+        self.pacer.reset()
+        self.pacer.wait("a", 5.0)
+        self.pacer.wait("b", 5.0)
+        self.assertEqual(self.sleeps, [])
+
+    def test_two_pacers_share_no_memory(self):
+        other = sc.Pacer(sleep=self._sleep, clock=self._clock)
+        self.pacer.wait("a", 5.0)
+        other.wait("a", 5.0)
+        self.assertEqual(self.sleeps, [])
+
+    def test_defaults_resolve_to_the_time_module_at_call_time(self):
+        # No injected sleep or clock: the pacer must reach both through the
+        # module attribute, so a patched time.sleep is the one it calls. A
+        # pacer built before the patch went in has to honour it too.
+        pacer = sc.Pacer()
+        with (
+            mock.patch.object(sc.time, "sleep") as slept,
+            mock.patch.object(sc.time, "monotonic", return_value=50.0),
+        ):
+            pacer.wait("a", 2.0)
+            pacer.wait("a", 2.0)
+        slept.assert_called_once_with(2.0)
+
+
 class DensityRobustnessTests(unittest.TestCase):
     def test_naive_date_is_treated_as_utc_not_a_crash(self):
         from datetime import datetime, timedelta, timezone

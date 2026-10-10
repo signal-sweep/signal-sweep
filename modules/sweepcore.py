@@ -15,6 +15,7 @@ on the second use, not the first" rule):
   - gh:      gh, gh_graphql, is_auth_failure
              (auth failure -> exit with a 'gh auth login' hint)
   - http:    http_get         (public read with 429/503 Retry-After backoff)
+  - pacing:  Pacer            (owed-time floor between requests under one key)
   - window:  LaneReport, note_fetch_ok, parse_stamp, window_start, earned_stamp,
              hold_reason     (the earned-marker rule every scanning module obeys)
 
@@ -495,6 +496,61 @@ def http_get(url, timeout=15, headers=None, retries=2, backoff_base=2.0):
             return exc.code, "", f"HTTP {exc.code}"
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             return None, "", str(exc)[:200]
+
+
+# --- pacing ------------------------------------------------------------------
+
+
+class Pacer:
+    """Hold a minimum spacing between successive requests under one key.
+
+    The wait is owed time: the floor minus whatever has already elapsed since
+    the key was last stamped. First contact under a key waits not at all,
+    because there is no earlier request to space it from. Time spent on
+    anything else in between (another key, a slow response, parsing) is real
+    time the limit already counted, so it comes off the wait.
+
+    A key is whatever the rate limit is counted against: one host, one API.
+    A module-wide politeness delay that charges every request its full length
+    is a plain sleep and does not belong here.
+
+    `sleep` and `clock` default to time.sleep and time.monotonic, looked up on
+    each call, so a test that patches either one is what the pacer reaches.
+    Tests may also pass fakes so no real second is ever spent.
+    """
+
+    def __init__(self, sleep=None, clock=None):
+        self._sleep = sleep
+        self._clock = clock
+        self._last = {}
+
+    def _now(self):
+        return time.monotonic() if self._clock is None else self._clock()
+
+    def wait(self, key, floor):
+        """Sleep whatever `key` still owes of `floor`, then stamp it as sent
+        now. A floor of zero or less is no floor: nothing is slept and nothing
+        is stamped."""
+        if floor <= 0:
+            return
+        previous = self._last.get(key)
+        if previous is not None:
+            owed = floor - (self._now() - previous)
+            if owed > 0:
+                if self._sleep is None:
+                    time.sleep(owed)
+                else:
+                    self._sleep(owed)
+        self._last[key] = self._now()
+
+    def stamp(self, key):
+        """Restart `key`'s floor from now. For a limit that counts from when a
+        response came back, call this once the request has returned."""
+        self._last[key] = self._now()
+
+    def reset(self):
+        """Forget every key, so the next request under each is first contact."""
+        self._last.clear()
 
 
 # --- relevance tiering -------------------------------------------------------
