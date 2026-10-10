@@ -52,6 +52,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     density_counts,
@@ -412,6 +414,7 @@ def cmd_scan(args):
     errors = list(report) + advisory
     dropped = {"cooldown": cooldown_dropped}
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_held": held,
         "dropped": dropped,
@@ -426,6 +429,7 @@ def cmd_scan(args):
         f"changed={status_counts['changed']} unreachable={status_counts['unreachable']} "
         f"dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(f"candidates -> {out}")
     for err in errors[:5]:
         print(f"WARN {err}", file=sys.stderr)

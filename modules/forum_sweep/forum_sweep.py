@@ -48,6 +48,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     density_counts,
@@ -1554,6 +1556,7 @@ def cmd_scan(args):
     for cand in kept:
         by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         "window_since_by_source": {
@@ -1583,6 +1586,7 @@ def cmd_scan(args):
         f"FORUM_SWEEP_OK{mode} window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(
         f"fit tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
         f"{by_tier.get('low', 0)} low"

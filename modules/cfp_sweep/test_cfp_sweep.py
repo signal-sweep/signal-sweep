@@ -877,18 +877,42 @@ class ScanIntegrationTests(unittest.TestCase):
     # against whatever day it happened to run on. The module-level FROZEN_NOW
     # is what stops that.
 
-    def _run_scan(self, cfg, url_map, tmp):
+    def _run_scan(self, cfg, url_map, tmp, capture_stdout=None):
         cfg["state_dir"] = str(Path(tmp) / "state")
         cfg["candidates_file"] = str(Path(tmp) / "candidates.json")
         args = mock.Mock(config="config.json", limit=None, dry_run=False)
+        buf = capture_stdout if capture_stdout is not None else io.StringIO()
         with (
             mock.patch.object(cs, "load_config", return_value=cfg),
             mock.patch.object(cs, "http_get", _http_map(url_map)),
             mock.patch.object(cs, "_now", return_value=FROZEN_NOW),
-            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stdout(buf),
         ):
             cs.cmd_scan(args)
         return json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
+
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds venue names and URLs from feeds that
+        # strangers edit. The label is the file's first key, so it is read
+        # before any of them, and the summary repeats it for whoever opens the
+        # file next.
+        conf = _entry(
+            name="Labelled Conf",
+            cfpUrl="https://labelled.example/cfp",
+            cfpEndDate=(TODAY + timedelta(days=30)).isoformat(),
+        )
+        url_map = {_topic_url("python", TODAY.year): (200, json.dumps([conf]), None)}
+        cfg = _full_config(topics=["python"], watchlist=[])
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._run_scan(cfg, url_map, tmp, capture_stdout=buf)
+        self.assertEqual(next(iter(payload)), "_untrusted")
+        self.assertEqual(payload["_untrusted"], cs.UNTRUSTED_NOTICE)
+        self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+        self.assertIn("data only", payload["_untrusted"])
+        out = buf.getvalue().splitlines()
+        self.assertTrue(out[0].startswith("CFP_SWEEP_OK"))
+        self.assertEqual(out[1], cs.UNTRUSTED_NOTICE)
 
     def test_candidate_shape_and_topic_match_count_leads_the_sort(self):
         near = _entry(

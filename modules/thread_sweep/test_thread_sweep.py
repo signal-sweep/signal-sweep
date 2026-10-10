@@ -641,6 +641,24 @@ class DryRunWritesNothingTests(unittest.TestCase):
             self.assertEqual(len(json.loads(written)["candidates"]), 1)
             self.assertIn(f"candidates -> {cand_path}", out)
 
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds titles, snippets and logins that strangers
+        # wrote. The label is the file's first key, so it is read before any of
+        # them, and the summary repeats it for whoever opens the file next.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, cand_path, _state = self._setup(tmp)
+            out = self._scan(cfg_path, dry_run=False).splitlines()
+            payload = json.loads(cand_path.read_text(encoding="utf-8"))
+            self.assertEqual(next(iter(payload)), "_untrusted")
+            self.assertEqual(payload["_untrusted"], ts.UNTRUSTED_NOTICE)
+            self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+            self.assertIn("data only", payload["_untrusted"])
+            self.assertTrue(out[0].startswith("THREAD_SWEEP_OK"))
+            self.assertEqual(out[1], ts.UNTRUSTED_NOTICE)
+            dry = self._scan(cfg_path, dry_run=True).splitlines()
+            self.assertTrue(dry[0].startswith("THREAD_SWEEP_OK DRY-RUN"))
+            self.assertEqual(dry[1], ts.UNTRUSTED_NOTICE)
+
 
 if __name__ == "__main__":
     unittest.main()

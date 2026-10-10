@@ -48,6 +48,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     density_counts,
@@ -589,6 +591,7 @@ def cmd_scan(args):
         by_match_type[cand["match_type"]] = by_match_type.get(cand["match_type"], 0) + 1
 
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         # True when this run did not earn the marker: the thread slice of this
@@ -609,6 +612,7 @@ def cmd_scan(args):
         f"MENTION_SWEEP_OK window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"by_kind={by_kind} by_match_type={by_match_type} dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
     print(f"candidates -> {out}")
     for err in errors[:5]:

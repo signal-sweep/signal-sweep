@@ -45,6 +45,8 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     earned_stamp,
@@ -540,6 +542,7 @@ def cmd_scan(args):
 
     flagged = sum(1 for c in kept if c["flagged"])
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "pushed_since": pushed_floor,
         # True when this run did not earn the marker: the lane-1 slice of this
@@ -557,6 +560,7 @@ def cmd_scan(args):
         f"LIST_SWEEP_OK pushed>{pushed_floor} raw={len(raw)} kept={len(kept)} "
         f"flagged={flagged} dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(f"candidates -> {out}")
     print("  flagged = web-form / human-only: submit those by hand, never automate.")
     for err in errors[:5]:

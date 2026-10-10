@@ -457,6 +457,21 @@ class ScanIntegrationTests(unittest.TestCase):
             lanes = {c["lane"] for c in payload["candidates"]}
             self.assertEqual(lanes, {"thread", "code"})
 
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds titles, snippets and code fragments that
+        # strangers wrote. The label is the file's first key, so it is read
+        # before any of them, and the summary repeats it.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes = [_issue_node("https://x/1", "Loving signal-sweep", body="works")]
+            _rc, payload, _cfg, out = self._run_scan(tmp, nodes, [])
+            self.assertEqual(next(iter(payload)), "_untrusted")
+            self.assertEqual(payload["_untrusted"], ms.UNTRUSTED_NOTICE)
+            self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+            self.assertIn("data only", payload["_untrusted"])
+            lines = out.splitlines()
+            self.assertTrue(lines[0].startswith("MENTION_SWEEP_OK"))
+            self.assertEqual(lines[1], ms.UNTRUSTED_NOTICE)
+
     def test_own_repo_hit_is_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:
             nodes = [

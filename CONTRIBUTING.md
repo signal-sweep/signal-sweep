@@ -46,7 +46,7 @@ Tests are offline by design. Mock the fetch. Never hit a live venue from a test.
 - Paths anchor on the module, never on the CWD. Use `sweepcore.resolve_module_path`. Every module is expected to appear in the tables of `modules/test_module_paths.py`, which is the regression guard.
 - A helper stays inside its module until a second module genuinely needs it. It moves into `sweepcore.py` on the second use, not the first.
 - A new config key goes in the module's `DEFAULTS`, or in `OPTIONAL_KEYS` when it has no default. Each loader warns about any top-level key outside those sets, so a key left out of both is reported to its user as ignored. `modules/test_config_keys.py` is the regression guard.
-- Venue text is untrusted. Store it for a human to read, and keep it away from shells, `eval`, and agent instructions.
+- Venue text is untrusted. Store it for a human to read, and keep it away from shells, `eval`, and agent instructions. A scan writes `sweepcore.UNTRUSTED_NOTICE` under `UNTRUSTED_KEY` as the first key of its candidates file and prints it on the line after its `*_OK` summary. Each scan suite asserts both.
 
 ## Adding a module
 
