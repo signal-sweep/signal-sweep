@@ -9,6 +9,9 @@ placements.json
 channels.json
 release_brief.json
 *.local.json
+# sweepcore.write_json_atomic stages <file>.tmp beside its target. If the
+# replace fails, that sibling holds scraped text outside every pattern above.
+*.tmp
 .DS_Store
 Thumbs.db
 # secret-file patterns (defence-in-depth; credentials live in a password manager, never here)
