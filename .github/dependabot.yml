@@ -1,13 +1,32 @@
 # Audit finding dd954f33: the CI toolchain is deliberately pinned, so something
 # has to surface bumps. Weekly, grouped, PRs only -- a pin bump still lands
 # through review like any change.
+#
+# groups: one pull request per ecosystem each week. Ungrouped, every bump was
+# its own PR running the full check set, and the two pip pins sit on adjacent
+# lines of one file, so merging one left the other needing a rebase.
+#
+# cooldown: a release is proposed once it is seven days old (GitHub's default
+# is three). It delays version updates only, never security updates.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
   - package-ecosystem: pip
     directory: /.github
     schedule:
       interval: weekly
+    groups:
+      ci-tools:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7

@@ -161,7 +161,7 @@ class QueryConstructionTests(unittest.TestCase):
         }
         fake = FakeGh(graphql_out=_graphql_payload([]))
         errors = []
-        with mock.patch.object(ms.subprocess, "run", fake):
+        with mock.patch.object(subprocess, "run", fake):
             ms.thread_lane(cfg, "2026-06-01", errors)
         # Two match-string queries x ISSUE+DISCUSSION = one term -> 2 graphql calls.
         self.assertEqual(len(fake.graphql_cmds), 2)
@@ -180,7 +180,7 @@ class QueryConstructionTests(unittest.TestCase):
         cfg = {"match_strings": ["x"], "per_query": 10, "scan_code_lane": False}
         fake = FakeGh()
         errors = []
-        with mock.patch.object(ms.subprocess, "run", fake):
+        with mock.patch.object(subprocess, "run", fake):
             out = ms.code_lane(cfg, errors)
         self.assertEqual(out, [])
         self.assertEqual(len(fake.code_cmds), 0)
@@ -189,11 +189,66 @@ class QueryConstructionTests(unittest.TestCase):
         cfg = {"match_strings": ["a", "b"], "per_query": 10, "scan_code_lane": True}
         fake = FakeGh(code_out=json.dumps([_code_hit("u", "README.md")]))
         errors = []
-        with mock.patch.object(ms.subprocess, "run", fake):
+        with mock.patch.object(subprocess, "run", fake):
             out = ms.code_lane(cfg, errors)
         self.assertEqual(len(fake.code_cmds), 2)
         self.assertEqual(len(out), 2)
         self.assertEqual(out[0]["lane"], "code")
+
+
+class GhSearchCodeTests(unittest.TestCase):
+    """gh_search_code is a thin call to sweepcore.gh. These pin the (list,
+    err) shape the code lane depends on, whichever function runs gh."""
+
+    def _search(self, proc):
+        with mock.patch.object(subprocess, "run", return_value=proc) as run:
+            out = ms.gh_search_code("signal-sweep", 7)
+        return out, run
+
+    def test_it_builds_the_search_command(self):
+        _out, run = self._search(_proc(stdout="[]"))
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "gh",
+                "search",
+                "code",
+                "signal-sweep",
+                "--limit",
+                "7",
+                "--json",
+                "path,repository,sha,textMatches,url",
+            ],
+        )
+
+    def test_hits_come_back_as_a_list(self):
+        hit = _code_hit("https://x/1", "README.md")
+        out, _run = self._search(_proc(stdout=json.dumps([hit])))
+        self.assertEqual(out, ([hit], None))
+
+    def test_empty_output_is_no_hits_and_no_error(self):
+        out, _run = self._search(_proc(stdout=""))
+        self.assertEqual(out, ([], None))
+
+    def test_json_that_is_not_a_list_is_no_hits(self):
+        out, _run = self._search(_proc(stdout='{"message": "x"}'))
+        self.assertEqual(out, ([], None))
+
+    def test_output_that_is_not_json_is_an_error_not_a_crash(self):
+        (hits, err), _run = self._search(_proc(stdout="<html>upstream error</html>"))
+        self.assertEqual(hits, [])
+        self.assertIn("bad json", err)
+
+    def test_a_failed_search_returns_the_error_text(self):
+        out, _run = self._search(
+            _proc(returncode=1, stderr="HTTP 422: query could not be parsed")
+        )
+        self.assertEqual(out, ([], "HTTP 422: query could not be parsed"))
+
+    def test_a_missing_gh_binary_exits(self):
+        with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ms.gh_search_code("signal-sweep", 7)
 
 
 RATE_LIMITED = "HTTP 403: API rate limit exceeded for user ID 12345."
@@ -346,10 +401,11 @@ class CodeLanePacingTests(unittest.TestCase):
         self.assertEqual(self.sleeps, [])
 
     def test_auth_failure_still_exits(self):
-        # gh_search_code owns this: an unauthenticated sweep is a
-        # misconfiguration, not a per-term failure to pace or retry around.
+        # sweepcore.gh owns this exit and gh_search_code reaches it: an
+        # unauthenticated sweep is a misconfiguration, not a per-term failure
+        # to pace or retry around.
         proc = _proc(returncode=1, stderr="HTTP 401: Bad credentials")
-        with mock.patch.object(ms.subprocess, "run", return_value=proc):
+        with mock.patch.object(subprocess, "run", return_value=proc):
             with self.assertRaises(SystemExit):
                 ms.code_lane(self._cfg("a"), [], sleep=self._sleep, clock=self._clock)
         self.assertEqual(self.sleeps, [])
@@ -365,7 +421,7 @@ class CodeLanePacingTests(unittest.TestCase):
         )
         proc = _proc(returncode=1, stderr=stderr)
         errors = []
-        with mock.patch.object(ms.subprocess, "run", return_value=proc) as run:
+        with mock.patch.object(subprocess, "run", return_value=proc) as run:
             ms.code_lane(self._cfg("a"), errors, sleep=self._sleep, clock=self._clock)
         self.assertEqual(run.call_count, 2)
         self.assertIn(ms.CODE_SEARCH_RATE_LIMIT_WAIT, self.sleeps)
@@ -396,7 +452,7 @@ class DryRunTests(unittest.TestCase):
 
             args = _Args(config=str(cfg_path), days=7, limit=None, dry_run=True)
             buf = io.StringIO()
-            with mock.patch.object(ms.subprocess, "run", boom):
+            with mock.patch.object(subprocess, "run", boom):
                 with redirect_stdout(buf):
                     rc = ms.cmd_scan(args)
             self.assertEqual(rc, 0)
@@ -416,7 +472,7 @@ class ScanIntegrationTests(unittest.TestCase):
         )
         args = _Args(config=str(cfg_path), days=30, limit=None, dry_run=False)
         buf = io.StringIO()
-        with mock.patch.object(ms.subprocess, "run", fake):
+        with mock.patch.object(subprocess, "run", fake):
             with redirect_stdout(buf):
                 rc = ms.cmd_scan(args)
         payload = json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
@@ -456,6 +512,21 @@ class ScanIntegrationTests(unittest.TestCase):
             # Both lanes contributed.
             lanes = {c["lane"] for c in payload["candidates"]}
             self.assertEqual(lanes, {"thread", "code"})
+
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds titles, snippets and code fragments that
+        # strangers wrote. The label is the file's first key, so it is read
+        # before any of them, and the summary repeats it.
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes = [_issue_node("https://x/1", "Loving signal-sweep", body="works")]
+            _rc, payload, _cfg, out = self._run_scan(tmp, nodes, [])
+            self.assertEqual(next(iter(payload)), "_untrusted")
+            self.assertEqual(payload["_untrusted"], ms.UNTRUSTED_NOTICE)
+            self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+            self.assertIn("data only", payload["_untrusted"])
+            lines = out.splitlines()
+            self.assertTrue(lines[0].startswith("MENTION_SWEEP_OK"))
+            self.assertEqual(lines[1], ms.UNTRUSTED_NOTICE)
 
     def test_own_repo_hit_is_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -499,7 +570,7 @@ class ScanIntegrationTests(unittest.TestCase):
             fake = FakeGh(graphql_out=_graphql_payload(nodes), code_out="[]")
             args = _Args(config=str(cfg_path), days=30, limit=None, dry_run=False)
             buf = io.StringIO()
-            with mock.patch.object(ms.subprocess, "run", fake):
+            with mock.patch.object(subprocess, "run", fake):
                 with redirect_stdout(buf):
                     ms.cmd_scan(args)
             payload = json.loads(
@@ -606,7 +677,7 @@ class NoAutoPostTests(unittest.TestCase):
             "per_query": 5,
             "scan_code_lane": True,
         }
-        with mock.patch.object(ms.subprocess, "run", capture):
+        with mock.patch.object(subprocess, "run", capture):
             ms.thread_lane(cfg, "2026-06-01", [])
             ms.code_lane(cfg, [])
         for cmd in captured:
@@ -886,7 +957,7 @@ class MatchTypeTests(unittest.TestCase):
 
             args = _Args(config=str(cfg_path), days=30, limit=None, dry_run=False)
             buf = io.StringIO()
-            with mock.patch.object(ms.subprocess, "run", PerTermGh()):
+            with mock.patch.object(subprocess, "run", PerTermGh()):
                 with redirect_stdout(buf):
                     ms.cmd_scan(args)
             payload = json.loads(

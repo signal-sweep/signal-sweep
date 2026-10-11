@@ -36,7 +36,8 @@ are offline by design; mock the fetch and never hit a live venue from a test.
 `modules/<name>/` is one self-contained module: a script, an `*.example.json`
 config template, a README, and an optional agent-skill example.
 `modules/sweepcore.py` is the shared core (dedup, ledger, state, `gh`, HTTP with
-backoff, relevance tiering); reuse it rather than copying its logic.
+backoff, request pacing, relevance tiering); reuse it rather than copying its
+logic.
 
 State stays out of git. `state/`, `candidates.json` and the live configs are
 gitignored, and a real ledger is your posting history, so never commit one.

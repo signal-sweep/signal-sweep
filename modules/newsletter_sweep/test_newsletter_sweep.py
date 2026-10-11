@@ -766,6 +766,25 @@ class ScanIntegrationTests(unittest.TestCase):
             ns.cmd_scan(args)
         return json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
 
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file names third-party outlets and where each takes
+        # submissions. The label is the file's first key, so it is read before
+        # any of them, and the summary repeats it for whoever opens the file
+        # next.
+        outlet = _outlet(name="Labelled Outlet")
+        cfg = _full_config(outlets=[outlet])
+        url_map = {outlet["check_url"]: (200, "submit your tool", None)}
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._run_scan(cfg, _http_map(url_map), tmp, capture_stdout=buf)
+        self.assertEqual(next(iter(payload)), "_untrusted")
+        self.assertEqual(payload["_untrusted"], ns.UNTRUSTED_NOTICE)
+        self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+        self.assertIn("data only", payload["_untrusted"])
+        out = buf.getvalue().splitlines()
+        self.assertTrue(out[0].startswith("NEWSLETTER_SWEEP_OK"))
+        self.assertEqual(out[1], ns.UNTRUSTED_NOTICE)
+
     def test_candidate_shape_carries_every_expected_field(self):
         outlet = _outlet(name="Shape Outlet")
         cfg = _full_config(outlets=[outlet])

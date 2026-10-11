@@ -81,6 +81,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     earned_stamp,
@@ -92,6 +94,7 @@ from sweepcore import (  # noqa: E402
     posted_urls,
     relevance_tier,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -207,6 +210,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "benchmark-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -793,6 +797,7 @@ def cmd_scan(args):
 
     since_headline = min(since_by_lane.values()).strftime("%Y-%m-%d")
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_since": since_headline,
         "window_since_by_lane": {
@@ -832,6 +837,7 @@ def cmd_scan(args):
         f"BENCHMARK_SWEEP_OK{mode} window>{since_headline} raw={len(raw)} "
         f"kept={len(kept)} dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     tally = " / ".join(f"{prop}={count}" for prop, count in by_property.items())
     print(f"demand by property: {tally}")
     print(

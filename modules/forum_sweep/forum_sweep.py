@@ -48,7 +48,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
+    Pacer,
     append_ledger,
     density_counts,
     earned_stamp,
@@ -60,6 +63,7 @@ from sweepcore import (  # noqa: E402
     posted_urls,
     relevance_tier,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -75,6 +79,10 @@ DEFAULTS = {
     "state_dir": "state",
     "candidates_file": "candidates.json",
 }
+# Read without a DEFAULTS entry: thresholds{} is flattened onto the top level
+# in load_config. A new key belongs here or in DEFAULTS, or load_config reports
+# it as unknown.
+OPTIONAL_KEYS = ["thresholds"]
 
 SOURCES = (
     "discourse",
@@ -126,15 +134,17 @@ REQUEST_DELAY = 0.0
 # iterates phrase x instance (phrase outer, instance inner -- see
 # discourse_adapter), so every OTHER configured host read between two visits
 # to the same one is real elapsed time that already counts against this floor
-# (_pace_host credits it); at the module's real instance counts the explicit
-# sleep the floor demands is small or zero. Only a single- or few-instance
-# config pays close to the full 4.1s on every request, which is also the
-# config where that one host's own rate is the whole scan's pace anyway.
+# (sweepcore.Pacer credits it); at the module's real instance counts the
+# explicit sleep the floor demands is small or zero. Only a single- or
+# few-instance config pays close to the full 4.1s on every request, which is
+# also the config where that one host's own rate is the whole scan's pace
+# anyway.
 DISCOURSE_MIN_REQUEST_DELAY = 4.1
 
-# host -> time.monotonic() of the last request this process sent it. Only the
-# per-host lanes touch it; a module-wide throttle needs no memory.
-_LAST_REQUEST_AT = {}
+# Owed-time pacing for the per-host lanes, keyed by host: it remembers when
+# this process last sent each one a request. Only those lanes touch it; a
+# module-wide throttle needs no memory.
+_PACER = Pacer()
 
 
 def load_config(path):
@@ -148,6 +158,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS, *OPTIONAL_KEYS), "forum-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -252,26 +263,13 @@ def make_candidate(
 
 
 # --- HTTP helper -------------------------------------------------------------
-
-
-def _pace_host(host, floor):
-    """Sleep only as long as this host is still owed.
-
-    A module-wide throttle charges every request the full delay. That is right
-    for a global politeness setting and wrong for a per-instance rate limit,
-    because time spent on OTHER hosts in between is real time this host's limit
-    already counted. So the wait is the floor minus whatever has elapsed since
-    this host was last read, and first contact waits not at all: there is no
-    earlier request to space it from.
-    """
-    if floor <= 0:
-        return
-    previous = _LAST_REQUEST_AT.get(host)
-    if previous is not None:
-        wait = floor - (time.monotonic() - previous)
-        if wait > 0:
-            time.sleep(wait)
-    _LAST_REQUEST_AT[host] = time.monotonic()
+#
+# Two kinds of wait live here. The module-wide REQUEST_DELAY is a politeness
+# setting and charges every request its full length, so it is a plain sleep.
+# A per-instance rate limit is different: time spent on OTHER hosts in between
+# is real time this host's limit already counted, so a per-host lane sleeps
+# only what the host is still owed. That rule is sweepcore.Pacer, held in
+# _PACER above and shared with mention_sweep's code lane.
 
 
 def http_get_json(url, errors, label, host=None, delay=None):
@@ -289,7 +287,7 @@ def http_get_json(url, errors, label, host=None, delay=None):
     """
     floor = REQUEST_DELAY if delay is None else max(REQUEST_DELAY, delay)
     if host is not None:
-        _pace_host(host, floor)
+        _PACER.wait(host, floor)
     elif floor > 0:
         time.sleep(floor)
     status, body, err = http_get(
@@ -325,7 +323,7 @@ def http_get_xml(url, errors, label, delay=None, host=None):
     `delay` overrides the module-wide REQUEST_DELAY throttle for this one call,
     so a lane with a tighter rate limit than the rest of the module can pace
     itself without the operator having to slow every other lane to match.
-    `host` turns that wait into owed-time pacing against one host (_pace_host):
+    `host` turns that wait into owed-time pacing against one host (_PACER):
     the first request to it is immediate and a later one sleeps only what is
     still owed, where the plain throttle sleeps the full delay before every
     request including the first. The floor is then measured from when the
@@ -338,7 +336,7 @@ def http_get_xml(url, errors, label, delay=None, host=None):
     """
     wait = REQUEST_DELAY if delay is None else delay
     if host is not None:
-        _pace_host(host, wait)
+        _PACER.wait(host, wait)
     elif wait > 0:
         time.sleep(wait)
     status, body, err = http_get(
@@ -347,7 +345,7 @@ def http_get_xml(url, errors, label, delay=None, host=None):
         headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, text/xml"},
     )
     if host is not None:
-        _LAST_REQUEST_AT[host] = time.monotonic()
+        _PACER.stamp(host)
     if err:
         errors.append(f"{label}: {err}")
         return None
@@ -416,7 +414,7 @@ def discourse_adapter(cfg, since_dt, errors):
     comment). The loop is phrase-major -- phrase outer, instance inner -- so
     two requests to the SAME host are separated by every other configured
     instance in between; that elapsed time already counts against the floor
-    (_pace_host credits it), so at real instance counts the explicit sleep the
+    (the pacer credits it), so at real instance counts the explicit sleep the
     floor demands is small or zero rather than paid on every request."""
     results = []
     src = cfg["sources"].get("discourse") or {}
@@ -611,7 +609,7 @@ _REDDIT_ATOM_NS = "{http://www.w3.org/2005/Atom}"
 # that is: each one past the first costs another minute of scan.
 REDDIT_MIN_REQUEST_DELAY = 61.0
 
-# The key reddit's requests are paced under in _LAST_REQUEST_AT. The limit is
+# The key reddit's requests are paced under in _PACER. The limit is
 # per client, not per subreddit, so every request shares the one entry.
 _REDDIT_HOST = "https://www.reddit.com"
 
@@ -1548,6 +1546,7 @@ def cmd_scan(args):
     for cand in kept:
         by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         "window_since_by_source": {
@@ -1577,6 +1576,7 @@ def cmd_scan(args):
         f"FORUM_SWEEP_OK{mode} window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(
         f"fit tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
         f"{by_tier.get('low', 0)} low"

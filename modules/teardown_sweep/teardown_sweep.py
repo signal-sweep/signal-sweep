@@ -70,6 +70,8 @@ from urllib.parse import quote, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     earned_stamp,
@@ -81,6 +83,7 @@ from sweepcore import (  # noqa: E402
     posted_urls,
     relevance_tier,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -321,6 +324,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "teardown-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -1327,6 +1331,7 @@ def cmd_scan(args):
     for cand in kept:
         by_tier[cand["tier"]] = by_tier.get(cand["tier"], 0) + 1
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "github_pushed_floor": floor_date,
         "hn_window_since": since.isoformat(),
@@ -1347,6 +1352,7 @@ def cmd_scan(args):
         f"TEARDOWN_SWEEP_OK raw={len(raw)} kept={len(kept)} dropped={dropped} "
         f"errors={len(errors)} artefacts={len(artefact_raw)} repos={len(artefact_repos)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(
         f"tiers: {by_tier.get('high', 0)} high / {by_tier.get('med', 0)} med / "
         f"{by_tier.get('low', 0)} low"

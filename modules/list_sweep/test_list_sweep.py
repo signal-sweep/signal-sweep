@@ -352,6 +352,29 @@ class ScanIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["flagged_count"], 1)
         self.assertIn("project", cand["submission_draft"])
 
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds repo names and descriptions that strangers
+        # wrote. The label is the file's first key, so it is read before any of
+        # them, and the summary repeats it for whoever opens the file next.
+        hits = [
+            {
+                "fullName": "good/awesome-claude-code",
+                "description": "ai-agents and claude-code tools",
+                "stargazersCount": 500,
+                "url": "https://github.com/good/awesome-claude-code",
+            }
+        ]
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(buf):
+            _rc, payload = self._run_scan(tmp, hits, "Open a pull request to add one.")
+        self.assertEqual(next(iter(payload)), "_untrusted")
+        self.assertEqual(payload["_untrusted"], ls.UNTRUSTED_NOTICE)
+        self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+        self.assertIn("data only", payload["_untrusted"])
+        out = buf.getvalue().splitlines()
+        self.assertTrue(out[0].startswith("LIST_SWEEP_OK"))
+        self.assertEqual(out[1], ls.UNTRUSTED_NOTICE)
+
     def test_dedup_against_placements_and_seen(self):
         hits = [
             {

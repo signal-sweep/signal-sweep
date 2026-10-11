@@ -40,7 +40,6 @@ script, so the module reads its own state and config from any directory):
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -48,17 +47,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
+    Pacer,
     append_ledger,
     density_counts,
     earned_stamp,
+    gh,
     gh_graphql,
     hold_reason,
-    is_auth_failure,
     load_state,
     note_fetch_ok,
     posted_urls,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -164,6 +167,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "mention-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -259,30 +263,25 @@ def refine_match_type(cand, corroborators):
 
 def gh_search_code(term, limit):
     """`gh search code <term> --json …`. Returns (list, err). Fail-soft: a
-    non-zero exit or bad JSON returns ([], err) so the lane continues."""
-    cmd = [
-        "gh",
-        "search",
-        "code",
-        term,
-        "--limit",
-        str(limit),
-        "--json",
-        "path,repository,sha,textMatches,url",
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-    except FileNotFoundError:
-        sys.exit("gh CLI not found — install it and run 'gh auth login'")
-    if proc.returncode != 0:
-        err = proc.stderr.strip()[:500]
-        if is_auth_failure(err):
-            sys.exit(f"gh authentication failed — run 'gh auth login': {err}")
+    non-zero exit or bad JSON returns ([], err) so the lane continues.
+    sweepcore.gh owns the subprocess call and both of its exits (no gh binary,
+    failed authentication)."""
+    data, err = gh(
+        [
+            "search",
+            "code",
+            term,
+            "--limit",
+            str(limit),
+            "--json",
+            "path,repository,sha,textMatches,url",
+        ]
+    )
+    if err is not None:
         return [], err
-    try:
-        data = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        return [], f"bad json: {exc}"
+    if isinstance(data, str) and data:
+        # sweepcore.gh hands back the raw text when stdout did not parse.
+        return [], "bad json: gh search code printed output that is not JSON"
     return (data if isinstance(data, list) else []), None
 
 
@@ -415,15 +414,11 @@ def code_lane(cfg, errors, sleep=None, clock=None):
         return results
     sleep = time.sleep if sleep is None else sleep
     clock = time.monotonic if clock is None else clock
-    last_start = None
+    # One pacer per call: the lane's first search is immediate on every run.
+    pacer = Pacer(sleep=sleep, clock=clock)
 
     def paced_search(term):
-        nonlocal last_start
-        if last_start is not None:
-            owed = CODE_SEARCH_MIN_INTERVAL - (clock() - last_start)
-            if owed > 0:
-                sleep(owed)
-        last_start = clock()
+        pacer.wait("code-search", CODE_SEARCH_MIN_INTERVAL)
         return gh_search_code(term, cfg["per_query"])
 
     for term in cfg["match_strings"]:
@@ -587,6 +582,7 @@ def cmd_scan(args):
         by_match_type[cand["match_type"]] = by_match_type.get(cand["match_type"], 0) + 1
 
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_since": since_date,
         # True when this run did not earn the marker: the thread slice of this
@@ -607,6 +603,7 @@ def cmd_scan(args):
         f"MENTION_SWEEP_OK window>{since_date} raw={len(raw)} kept={len(kept)} "
         f"by_kind={by_kind} by_match_type={by_match_type} dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(f"posting density: {dens[30]} in 30d / {dens[90]} in 90d")
     print(f"candidates -> {out}")
     for err in errors[:5]:

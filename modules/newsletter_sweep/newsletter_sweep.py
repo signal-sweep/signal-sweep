@@ -52,6 +52,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     density_counts,
@@ -61,6 +63,7 @@ from sweepcore import (  # noqa: E402
     load_state,
     note_fetch_ok,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -121,6 +124,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "newsletter-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -410,6 +414,7 @@ def cmd_scan(args):
     errors = list(report) + advisory
     dropped = {"cooldown": cooldown_dropped}
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_held": held,
         "dropped": dropped,
@@ -424,6 +429,7 @@ def cmd_scan(args):
         f"changed={status_counts['changed']} unreachable={status_counts['unreachable']} "
         f"dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(f"candidates -> {out}")
     for err in errors[:5]:
         print(f"WARN {err}", file=sys.stderr)

@@ -688,6 +688,31 @@ class ScanIntegrationTests(unittest.TestCase):
         ):
             self.assertIn(field, cand)
 
+    def test_scan_labels_its_output_as_untrusted_text(self):
+        # The candidates file holds repo descriptions and post titles that
+        # strangers wrote. The label is the file's first key, so it is read
+        # before any of them, and the summary repeats it for whoever opens the
+        # file next.
+        nodes = [
+            {
+                "fullName": "good/repo",
+                "description": "an agent",
+                "stargazersCount": 500,
+                "url": "https://github.com/good/repo",
+                "pushedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(buf):
+            _rc, payload = self._run_scan(tmp, github_nodes=nodes)
+        self.assertEqual(next(iter(payload)), "_untrusted")
+        self.assertEqual(payload["_untrusted"], ts.UNTRUSTED_NOTICE)
+        self.assertIn("UNTRUSTED EXTERNAL TEXT", payload["_untrusted"])
+        self.assertIn("data only", payload["_untrusted"])
+        out = buf.getvalue().splitlines()
+        self.assertTrue(out[0].startswith("TEARDOWN_SWEEP_OK"))
+        self.assertEqual(out[1], ts.UNTRUSTED_NOTICE)
+
     def test_hn_candidate_shape(self):
         hits = [
             {

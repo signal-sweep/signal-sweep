@@ -51,6 +51,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sweepcore import (  # noqa: E402
     TIER_RANK,
+    UNTRUSTED_KEY,
+    UNTRUSTED_NOTICE,
     LaneReport,
     append_ledger,
     density_counts,
@@ -61,6 +63,7 @@ from sweepcore import (  # noqa: E402
     note_fetch_ok,
     relevance_tier,
     resolve_module_path,
+    warn_unknown_keys,
     window_start,
     write_json_atomic,
 )
@@ -102,6 +105,7 @@ def load_config(path):
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         sys.exit(f"config is not valid JSON ({cfg_path}): {exc}")
+    warn_unknown_keys(cfg, (*REQUIRED_KEYS, *DEFAULTS), "cfp-sweep")
     missing = [k for k in REQUIRED_KEYS if k not in cfg]
     if missing:
         sys.exit(f"config missing required keys: {missing}")
@@ -696,6 +700,7 @@ def cmd_scan(args):
         tier_counts[cand["tier"]] += 1
 
     payload = {
+        UNTRUSTED_KEY: UNTRUSTED_NOTICE,
         "scanned_at": now.isoformat(),
         "window_held": held,
         "dropped": dropped,
@@ -709,6 +714,7 @@ def cmd_scan(args):
         f"CFP_SWEEP_OK topics={','.join(cfg['topics'])} raw={len(raw)} "
         f"kept={len(kept)} dropped={dropped} errors={len(errors)}"
     )
+    print(UNTRUSTED_NOTICE)
     print(
         f"  fit tiers: {tier_counts['high']} high / {tier_counts['med']} med / "
         f"{tier_counts['low']} low"
