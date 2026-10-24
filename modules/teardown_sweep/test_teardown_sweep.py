@@ -1570,21 +1570,96 @@ class ArtefactLaneTests(unittest.TestCase):
         cfg = self._cfg()
         with (
             mock.patch.object(ts, "search_code_page", return_value=([], None)),
-            mock.patch.object(ts.time, "sleep") as m_sleep,
+            mock.patch("time.sleep") as m_sleep,
         ):
             ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
         m_sleep.assert_not_called()
 
-    def test_sleeps_between_successive_calls(self):
-        cfg = self._cfg(
+    def _fake_time(self):
+        """A clock that only moves when told to, and a sleep that moves it."""
+        now = [1000.0]
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+
+        return now, slept, sleep, lambda: now[0]
+
+    def _two_queries(self):
+        return self._cfg(
             queries=[{"label": "a", "query": "qa"}, {"label": "b", "query": "qb"}]
         )
+
+    def test_sleeps_between_successive_calls(self):
+        _, slept, sleep, clock = self._fake_time()
+        with mock.patch.object(ts, "search_code_page", return_value=([], None)):
+            ts.artefact_lane(
+                self._two_queries(),
+                datetime.now(timezone.utc),
+                [],
+                sleep=sleep,
+                clock=clock,
+            )
+        self.assertEqual(slept, [ts.ARTEFACT_SLEEP_SECONDS])
+
+    def test_default_sleep_and_clock_are_the_time_module(self):
         with (
             mock.patch.object(ts, "search_code_page", return_value=([], None)),
-            mock.patch.object(ts.time, "sleep") as m_sleep,
+            mock.patch("time.monotonic", return_value=50.0),
+            mock.patch("time.sleep") as m_sleep,
         ):
-            ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
+            ts.artefact_lane(self._two_queries(), datetime.now(timezone.utc), [])
         m_sleep.assert_called_once_with(ts.ARTEFACT_SLEEP_SECONDS)
+
+    def _hit_lane(self, build_seconds, search_seconds=0.0):
+        """Run two queries whose first page holds one hit. Building that hit's
+        candidate takes `build_seconds` and each search `search_seconds`, on
+        the fake clock. Returns what the lane slept."""
+        now, slept, sleep, clock = self._fake_time()
+        hit = {"path": "CLAUDE.md", "html_url": "x", "repository": {"full_name": "a/b"}}
+
+        def search(query, page, per_page):
+            now[0] += search_seconds
+            return ([hit], None) if query == "qa" else ([], None)
+
+        def build(*args):
+            now[0] += build_seconds
+
+        with (
+            mock.patch.object(ts, "search_code_page", side_effect=search),
+            mock.patch.object(ts, "build_artefact_candidate", side_effect=build),
+        ):
+            ts.artefact_lane(
+                self._two_queries(),
+                datetime.now(timezone.utc),
+                [],
+                sleep=sleep,
+                clock=clock,
+            )
+        return slept
+
+    def test_time_spent_building_candidates_counts_toward_the_gap(self):
+        self.assertEqual(self._hit_lane(build_seconds=4.0), [2.0])
+
+    def test_no_sleep_when_building_outlasts_the_gap(self):
+        self.assertEqual(self._hit_lane(build_seconds=7.0), [])
+
+    def test_gap_runs_from_the_response_not_the_send(self):
+        # A slow search must not buy down the wait: the next call still goes
+        # out a full gap after the previous one came back.
+        slept = self._hit_lane(build_seconds=0.0, search_seconds=5.0)
+        self.assertEqual(slept, [ts.ARTEFACT_SLEEP_SECONDS])
+
+    def test_each_run_starts_with_an_immediate_call(self):
+        _, slept, sleep, clock = self._fake_time()
+        cfg = self._cfg()
+        with mock.patch.object(ts, "search_code_page", return_value=([], None)):
+            for _ in range(2):
+                ts.artefact_lane(
+                    cfg, datetime.now(timezone.utc), [], sleep=sleep, clock=clock
+                )
+        self.assertEqual(slept, [])
 
     def test_builds_candidates_from_hits(self):
         cfg = self._cfg()
@@ -1600,7 +1675,7 @@ class ArtefactLaneTests(unittest.TestCase):
             mock.patch.object(ts, "search_code_page", return_value=([hit], None)),
             mock.patch.object(ts, "fetch_repo_meta", return_value=meta),
             mock.patch.object(ts, "fetch_artefact_content", return_value=""),
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
         self.assertEqual(len(raw), 1)
@@ -1619,7 +1694,7 @@ class ArtefactLaneTests(unittest.TestCase):
         advisory = []
         with (
             mock.patch.object(ts, "search_code_page", side_effect=_fake),
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), advisory)
         self.assertEqual(raw, [])
@@ -1639,7 +1714,7 @@ class ArtefactLaneTests(unittest.TestCase):
         advisory = []
         with (
             mock.patch.object(ts, "search_code_page", side_effect=_fake),
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), advisory)
         self.assertEqual(raw, [])
@@ -1660,7 +1735,7 @@ class ArtefactLaneTests(unittest.TestCase):
             mock.patch.object(ts, "search_code_page", return_value=([hit], None)),
             mock.patch.object(ts, "fetch_repo_meta", return_value=meta),
             mock.patch.object(ts, "fetch_artefact_content", return_value=""),
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
         self.assertEqual(raw[0]["artefact_label"], "filename:CLAUDE.md")
@@ -1669,7 +1744,7 @@ class ArtefactLaneTests(unittest.TestCase):
         cfg = self._cfg(queries=["not-a-dict", {"label": "x"}])
         with (
             mock.patch.object(ts, "search_code_page") as m_search,
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             raw = ts.artefact_lane(cfg, datetime.now(timezone.utc), [])
         self.assertEqual(raw, [])
@@ -1864,7 +1939,7 @@ class ArtefactScanIntegrationTests(unittest.TestCase):
             mock.patch.object(
                 ts, "fetch_artefact_content", side_effect=_fetch_artefact_content
             ),
-            mock.patch.object(ts.time, "sleep"),
+            mock.patch("time.sleep"),
         ):
             rc = ts.cmd_scan(args)
         payload = json.loads(Path(cfg["candidates_file"]).read_text(encoding="utf-8"))
@@ -2084,7 +2159,7 @@ class ArtefactScanIntegrationTests(unittest.TestCase):
                     "search_code_page",
                     return_value=([], "gh: API rate limit exceeded (HTTP 403)"),
                 ),
-                mock.patch.object(ts.time, "sleep"),
+                mock.patch("time.sleep"),
             ):
                 rc = ts.cmd_scan(args)
             payload = json.loads(
@@ -2834,7 +2909,7 @@ class ArtefactScanSuggestedVenuesIntegrationTests(unittest.TestCase):
                 mock.patch.object(
                     ts, "fetch_artefact_content", return_value="memory index"
                 ),
-                mock.patch.object(ts.time, "sleep"),
+                mock.patch("time.sleep"),
             ):
                 rc = ts.cmd_scan(args)
             payload = json.loads(
