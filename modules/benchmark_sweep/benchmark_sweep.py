@@ -552,6 +552,9 @@ def arxiv_lane(cfg, since_dt, errors):
     max_results = cfg["arxiv_max_per_phrase"]
     for prop, phrases in cfg["arxiv_phrases"].items():
         for phrase in phrases:
+            # A plain sleep, not sweepcore.Pacer: the operator's
+            # arxiv_request_delay_seconds is charged in full before every
+            # request, and only a fast parse sits between two of them.
             if ARXIV_REQUEST_DELAY > 0:
                 time.sleep(ARXIV_REQUEST_DELAY)
             url = _arxiv_url(phrase, max_results)

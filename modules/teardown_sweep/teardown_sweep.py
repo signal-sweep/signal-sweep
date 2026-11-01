@@ -62,7 +62,6 @@ import binascii
 import hashlib
 import json
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -73,6 +72,7 @@ from sweepcore import (  # noqa: E402
     UNTRUSTED_KEY,
     UNTRUSTED_NOTICE,
     LaneReport,
+    Pacer,
     append_ledger,
     earned_stamp,
     gh,
@@ -306,8 +306,9 @@ HN_TIMEOUT = 15
 # limit == 10). ARTEFACT_PER_PAGE is fixed rather than configurable - the
 # constraint is the request COUNT, not the page size. Calls per scan =
 # len(artefact_queries) * artefact_pages_per_query; the shipped defaults (5
-# queries * 1 page = 5 calls) at ARTEFACT_SLEEP_SECONDS apart spend ~24s and
-# stay comfortably inside one rolling 60s window.
+# queries * 1 page = 5 calls), each sent at least ARTEFACT_SLEEP_SECONDS after
+# the previous one came back, span at least 24s and stay comfortably inside
+# one rolling 60s window.
 ARTEFACT_PER_PAGE = 30
 ARTEFACT_SLEEP_SECONDS = 6.0
 
@@ -894,7 +895,7 @@ def build_artefact_candidate(hit, label, cfg, now, repo_meta_cache, content_cach
     return cand
 
 
-def artefact_lane(cfg, now, advisory):
+def artefact_lane(cfg, now, advisory, sleep=None, clock=None):
     """Lane 3: REST code search for the configuration artefacts themselves -
     real configured agent workspaces, not the frameworks or write-ups lanes 1
     and 2 find. Code search has no date qualifier to scope a floor against,
@@ -907,27 +908,35 @@ def artefact_lane(cfg, now, advisory):
     Budget: code_search is rate-limited to 10 requests/min (live-verified,
     `gh api rate_limit` -> resources.code_search.limit == 10). This lane
     makes len(artefact_queries) * artefact_pages_per_query calls per scan -
-    5 queries * 1 page = 5 calls with the shipped defaults - sleeping
-    ARTEFACT_SLEEP_SECONDS between successive calls (not before the first),
-    so a default run's 5 calls spread across ~24s stay comfortably inside
-    one rolling 60s window. A 403 on this endpoint is that limit, not an
-    auth failure; on one, this lane stops issuing further queries for the
-    rest of THIS run (rather than working through the remaining queries into
-    more 403s) and reports it as advisory - next run tries again from the
-    top."""
+    5 queries * 1 page = 5 calls with the shipped defaults. Each call after
+    the first is sent at least ARTEFACT_SLEEP_SECONDS after the previous one
+    came back, so a default run's 5 calls span at least ~24s and stay
+    comfortably inside one rolling 60s window. The gap is owed time
+    (sweepcore.Pacer): building candidates from a page's hits fetches repo
+    metadata and file content, and that time counts toward the gap, so the
+    lane sleeps only what is still owed. The first call never waits. A 403 on
+    this endpoint is that limit, not an auth failure; on one, this lane stops
+    issuing further queries for the rest of THIS run (rather than working
+    through the remaining queries into more 403s) and reports it as advisory
+    - next run tries again from the top.
+
+    `sleep` and `clock` default to time.sleep and time.monotonic, looked up at
+    call time; tests pass fakes so no real second is ever spent."""
     raw = []
     repo_meta_cache, content_cache = {}, {}
-    made_a_call = False
+    # One pacer per call: the lane's first search is immediate on every run.
+    pacer = Pacer(sleep=sleep, clock=clock)
     for entry in cfg["artefact_queries"]:
         if not isinstance(entry, dict) or not entry.get("query"):
             continue
         label = entry.get("label") or entry["query"]
         query = entry["query"]
         for page in range(1, cfg["artefact_pages_per_query"] + 1):
-            if made_a_call:
-                time.sleep(ARTEFACT_SLEEP_SECONDS)
-            made_a_call = True
+            pacer.wait("code-search", ARTEFACT_SLEEP_SECONDS)
             items, err = search_code_page(query, page, ARTEFACT_PER_PAGE)
+            # Count the gap from the response: a slow search must not shorten
+            # the wait before the next one.
+            pacer.stamp("code-search")
             if err:
                 advisory.append(f"artefact search {label!r} page {page}: {err}")
                 if "403" in err:
